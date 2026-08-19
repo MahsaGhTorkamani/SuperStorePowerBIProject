@@ -10,7 +10,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
-| **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * |
+| **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `TBData[Primary Group]` in the department list ** |
 | **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `CCMap[Primary Group Label]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
@@ -18,6 +18,16 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 \* `BellcorpMap` is not joined directly to `TBData` — it is reached through a
 bridge table: `TBData` → `BellPLMap` → `BellcorpMap`, the second hop joining
 on `Row`.
+
+\*\* OPEX is decided **first**, before the `BellcorpMap` lookup runs. A row is
+OPEX when `TBData[Primary Group]` is one of these 11 operating departments:
+
+`BI/Product` · `Commercial Sales` · `Construction` · `Consumer Sales` ·
+`Corporate Marketing` · `Direct Field Operations` · `Direct Legal & Regulatory` ·
+`G&A` · `Headquarters Expenses` · `Logistics` · `Technology`
+
+Everything else falls through to `BellcorpMap[LineItem]`, which is what
+classifies Revenue and COGS.
 
 ## Why calculated columns and not three separate visuals
 
@@ -78,9 +88,16 @@ needing three visuals stitched together, which breaks subtotals and sorting.
 
 ## Validation
 
-After step 2, drop `PL Level 1` into a table visual with `[Amount]`. Any rows
-landing under **"Unmapped"** are trial-balance accounts missing from
-`BellcorpMap` — chase those before trusting the totals. Then check that
+After step 2, drop `PL Level 1` into a table visual with `[Amount]`. You should
+see exactly `Revenue`, `COGS`, `OPEX` and nothing else. Any rows landing under
+**"Unmapped"** are trial-balance accounts that are neither an OPEX department
+nor resolvable through `BellcorpMap` — chase those before trusting the totals.
+
+Then cross-check the OPEX test on its own: put `TBData[Primary Group]` and
+`PL Level 1` in a table together. Every one of the 11 departments must show
+`OPEX`; if one shows `Unmapped`, the string in the DAX does not match the
+string in the data (almost always a trailing space, or the `&` / `/` in
+`G&A`, `Direct Legal & Regulatory`, `BI/Product`). Finally check that
 `[Total Revenue] - [Total COGS] - [Total OPEX]` reconciles to your existing
 operating income figure.
 
@@ -105,6 +122,15 @@ operating income figure.
    `Operating Income`.
 6. **`078` / `106`** — I read these as cost-center codes appearing as COGS
    Level 2, which matches `TBData[Cc]` feeding that slot. Confirm.
+7. **`TBData[Primary Group]` vs `CCMap[Primary Group Label]`** — these look
+   like the same concept in two places. If `TBData[Primary Group]` already
+   carries the department name, the OPEX branch of `PL Level 2` can use it
+   directly and the `CCMap` lookup becomes unnecessary. Worth checking: it
+   removes a lookup and a relationship dependency. Left as you specified
+   (`CCMap`) until confirmed.
+8. **OPEX department order** — `PL Level 2 Sort` orders them direct
+   operations → commercial → support → overhead. Renumber to match how
+   Finance presents the P&L.
 
 ## Note on this repo
 
