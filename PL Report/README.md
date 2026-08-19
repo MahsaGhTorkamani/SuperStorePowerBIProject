@@ -10,10 +10,14 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
-| **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` | `BellcorpMap[LineItem]` | `BellcorpMap[LineItem]` |
+| **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * |
 | **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `CCMap[Primary Group Label]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
+
+\* `BellcorpMap` is not joined directly to `TBData` — it is reached through a
+bridge table: `TBData` → `BellPLMap` → `BellcorpMap`, the second hop joining
+on `Row`.
 
 ## Why calculated columns and not three separate visuals
 
@@ -26,15 +30,22 @@ needing three visuals stitched together, which breaks subtotals and sorting.
 
 ## Build steps
 
-1. **Create the relationships** (optional but recommended for performance):
-   - `TBData[Account]` → `BellcorpMap[Account]` (many-to-one, single direction)
+1. **Create the relationships**:
+   - `TBData` → `BellPLMap` (many-to-one, single direction)
+   - `BellPLMap` → `BellcorpMap` on `Row` (many-to-one, single direction)
    - `TBData[Cc]` → `CCMap[Cost Center]` (many-to-one, single direction)
    - `TBData[Cc]` → `COGSMap[Cc]` (many-to-one, single direction)
 
+   The `BellcorpMap` chain matters most. `RELATED()` walks any number of
+   many-to-one hops, so with both arrows pointing **away from** `TBData`,
+   Level 1 is a single `RELATED ( BellcorpMap[LineItem] )`. If instead
+   `BellPLMap` is the *one* side of both relationships, the path is
+   many→one then one→many and `RELATED()` cannot cross it — use the nested
+   `LOOKUPVALUE` fallback in the `.dax` file.
+
    Power BI allows only one active relationship per table pair, and `TBData`
    hits `CCMap` and `COGSMap` on the same `Cc` column — that's fine, they're
-   different table pairs. The DAX ships with `LOOKUPVALUE` so it runs even
-   with **zero** relationships; swap to `RELATED()` once they exist.
+   different table pairs.
 
 2. **Add the calculated columns** to `TBData`, in this order (each one
    references the previous): `PL Level 1`, `PL Level 2`, `PL Level 3`,
@@ -84,17 +95,19 @@ operating income figure.
 2. **`COGSMap` join key** — I assumed it joins on cost center (`Cc`). If it
    joins on account or on `CTDesc`, change the `LOOKUPVALUE` arguments in
    `PL Level 3`.
-3. **`CCMap[Cost Center]`** — is this the key itself, or a descriptive label?
+3. **`TBData` → `BellPLMap` join key** — the bridge hop. I assumed an account
+   code on both sides; confirm the actual column.
+4. **`CCMap[Cost Center]`** — is this the key itself, or a descriptive label?
    If it's identical to `TBData[Cc]` the lookup is redundant and you should
    use `TBData[Cc]` directly.
-4. **Sign convention** — the DAX assumes costs are stored positive. If your
+5. **Sign convention** — the DAX assumes costs are stored positive. If your
    TB carries them as negatives, flip the subtractions in `Gross Profit` and
    `Operating Income`.
-5. **`078` / `106`** — I read these as cost-center codes appearing as COGS
+6. **`078` / `106`** — I read these as cost-center codes appearing as COGS
    Level 2, which matches `TBData[Cc]` feeding that slot. Confirm.
 
 ## Note on this repo
 
 The `.pbix` in this repo is the Superstore retail model — it contains none of
-`TBData`, `BellcorpMap`, `CCMap`, or `COGSMap`. This guide targets a separate
+`TBData`, `BellPLMap`, `BellcorpMap`, `CCMap`, or `COGSMap`. This guide targets a separate
 model, so nothing here modifies the existing report.

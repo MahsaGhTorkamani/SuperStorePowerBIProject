@@ -5,6 +5,7 @@
 // different source table depending on which Level 1 section the row is in.
 //
 //   Level 1  = BellcorpMap[LineItem]                (all sections)
+//              reached via TBData -> BellPLMap -> BellcorpMap (on "Row")
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
 //              TBData[Cc]                           (COGS)
 //              CCMap[Primary Group Label]           (OPEX)
@@ -26,18 +27,45 @@
 // ---------------------------------------------------------------------
 // 1. LEVEL 1  -- Revenue / COGS / OPEX  (from BellcorpMap[LineItem])
 // ---------------------------------------------------------------------
+// BellcorpMap is NOT joined directly to TBData. It sits two hops away
+// behind a bridge table:
+//
+//     TBData --many-to-one--> BellPLMap --many-to-one--> BellcorpMap
+//                                        (joined on "Row")
+//
+// RELATED() follows a chain of many-to-one relationships across any number
+// of hops, so if BOTH arrows point away from TBData this is a one-liner.
+// Use this version whenever the relationships exist and point the right way:
+
 PL Level 1 =
+COALESCE ( RELATED ( BellcorpMap[LineItem] ), "Unmapped" )
+
+
+// -- FALLBACK: no relationships, or the BellcorpMap arrow points the wrong
+//    way (i.e. BellPLMap is the "one" side of BOTH relationships, so the
+//    path from TBData is many->one then one->many and RELATED cannot walk
+//    it). Resolve the bridge manually, one hop at a time:
+
+PL Level 1 =
+VAR _Row =
+    LOOKUPVALUE (
+        BellPLMap[Row],
+        BellPLMap[Account],             // *** KEY *** in BellPLMap
+        TBData[Account]                 // *** KEY *** in TBData
+    )
 VAR _LineItem =
     LOOKUPVALUE (
         BellcorpMap[LineItem],
-        BellcorpMap[Account],           // *** KEY *** in BellcorpMap
-        TBData[Account]                 // *** KEY *** in TBData
+        BellcorpMap[Row], _Row          // BellcorpMap <-> BellPLMap join on "Row"
     )
 RETURN
     COALESCE ( _LineItem, "Unmapped" )
 
-// -- Relationship variant (use this instead if TBData -> BellcorpMap exists):
-// PL Level 1 = COALESCE ( RELATED ( BellcorpMap[LineItem] ), "Unmapped" )
+// Debug tip: if this returns "Unmapped" everywhere, split it into two
+// temporary columns -- one returning _Row, one returning _LineItem -- and
+// see which hop breaks. A blank _Row means the TBData -> BellPLMap key is
+// wrong; a populated _Row with blank _LineItem means "Row" does not match
+// between the two map tables (usually text vs. whole number).
 
 
 // ---------------------------------------------------------------------
