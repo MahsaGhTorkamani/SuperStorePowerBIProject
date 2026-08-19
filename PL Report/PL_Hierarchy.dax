@@ -1,0 +1,240 @@
+// =====================================================================
+// P&L HIERARCHY - CALCULATED COLUMNS ON TBData
+// =====================================================================
+// Builds the 3 visible columns of the P&L matrix. Each level pulls from a
+// different source table depending on which Level 1 section the row is in.
+//
+//   Level 1  = BellcorpMap[LineItem]                (all sections)
+//   Level 2  = TBData[Revenue Row Label]            (Revenue)
+//              TBData[Cc]                           (COGS)
+//              CCMap[Primary Group Label]           (OPEX)
+//   Level 3  = TBData[PL Label]                     (Revenue)
+//              COGSMap[CTDesc Parent]               (COGS)
+//              CCMap[Cost Center]                   (OPEX)
+//
+// NOTE ON LOOKUPVALUE vs RELATED:
+//   Every lookup below is written with LOOKUPVALUE so it works with NO
+//   relationships in place. If you already have (or create) a many-to-one
+//   relationship from TBData to the map table, swap it for RELATED() --
+//   it is materially faster on large trial balances. Both variants are
+//   shown for Level 1; the rest follow the same pattern.
+//
+// >>> Replace the *** KEY *** placeholders with your real join columns. <<<
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// 1. LEVEL 1  -- Revenue / COGS / OPEX  (from BellcorpMap[LineItem])
+// ---------------------------------------------------------------------
+PL Level 1 =
+VAR _LineItem =
+    LOOKUPVALUE (
+        BellcorpMap[LineItem],
+        BellcorpMap[Account],           // *** KEY *** in BellcorpMap
+        TBData[Account]                 // *** KEY *** in TBData
+    )
+RETURN
+    COALESCE ( _LineItem, "Unmapped" )
+
+// -- Relationship variant (use this instead if TBData -> BellcorpMap exists):
+// PL Level 1 = COALESCE ( RELATED ( BellcorpMap[LineItem] ), "Unmapped" )
+
+
+// ---------------------------------------------------------------------
+// 2. LEVEL 2  -- the blue column
+//    Revenue -> TBData[Revenue Row Label]
+//    COGS    -> TBData[Cc]
+//    OPEX    -> CCMap[Primary Group Label]
+// ---------------------------------------------------------------------
+PL Level 2 =
+VAR _Section = TBData[PL Level 1]
+VAR _CCGroup =
+    LOOKUPVALUE (
+        CCMap[Primary Group Label],
+        CCMap[Cost Center],             // *** KEY *** in CCMap
+        TBData[Cc]                      // *** KEY *** in TBData
+    )
+RETURN
+    SWITCH (
+        TRUE (),
+        _Section = "Revenue", TBData[Revenue Row Label],
+        _Section = "COGS",    TBData[Cc],
+        _Section = "OPEX",    _CCGroup,
+        BLANK ()
+    )
+
+
+// ---------------------------------------------------------------------
+// 3. LEVEL 3  -- the red column
+//    Revenue -> TBData[PL Label]
+//    COGS    -> COGSMap[CTDesc Parent]
+//    OPEX    -> CCMap[Cost Center]
+// ---------------------------------------------------------------------
+PL Level 3 =
+VAR _Section = TBData[PL Level 1]
+VAR _CogsParent =
+    LOOKUPVALUE (
+        COGSMap[CTDesc Parent],
+        COGSMap[Cc],                    // *** KEY *** in COGSMap -- see note A
+        TBData[Cc]
+    )
+VAR _CostCenter =
+    LOOKUPVALUE (
+        CCMap[Cost Center],
+        CCMap[Cost Center],
+        TBData[Cc]
+    )
+RETURN
+    SWITCH (
+        TRUE (),
+        _Section = "Revenue", TBData[PL Label],
+        _Section = "COGS",    _CogsParent,
+        _Section = "OPEX",    _CostCenter,
+        BLANK ()
+    )
+
+// NOTE A: if COGSMap is keyed on the account (or on CTDesc) rather than on
+// the cost center, change the last two arguments accordingly, e.g.
+//     LOOKUPVALUE ( COGSMap[CTDesc Parent], COGSMap[Account], TBData[Account] )
+//
+// NOTE B: if CCMap[Cost Center] IS the key column (identical to TBData[Cc]),
+// the lookup is redundant -- just use TBData[Cc] for the OPEX branch. Use the
+// lookup only when CCMap[Cost Center] is a *descriptive* label.
+
+
+// ---------------------------------------------------------------------
+// 4. LEVEL 4  -- the green detail column (OPTIONAL / NOT YET SPECIFIED)
+//    Sketch shows: FTR Internet / Vantage Internet / Residential / Business
+//                  for Revenue, and Salaries & Wages / Payroll Taxes for OPEX.
+//    Most likely this is the account description off the trial balance.
+//    Point it at whatever column actually holds that text.
+// ---------------------------------------------------------------------
+PL Level 4 =
+VAR _Section = TBData[PL Level 1]
+RETURN
+    SWITCH (
+        TRUE (),
+        _Section = "Revenue", TBData[Account Description],   // *** CONFIRM ***
+        _Section = "COGS",    BLANK (),                      // sketch stops at L3
+        _Section = "OPEX",    TBData[Account Description],   // *** CONFIRM ***
+        BLANK ()
+    )
+
+
+// ---------------------------------------------------------------------
+// 5. SORT COLUMNS -- so the matrix renders Revenue, COGS, OPEX in order
+//    Set each PL Level n column's "Sort by column" to its matching Sort col.
+// ---------------------------------------------------------------------
+PL Level 1 Sort =
+SWITCH (
+    TBData[PL Level 1],
+    "Revenue", 10,
+    "COGS",    30,
+    "OPEX",    50,
+    99
+)
+
+// Level 2 sort: forces Residential above SMB, Field Ops above Construction.
+// Extend the list as new groups appear; anything unlisted lands at the bottom.
+PL Level 2 Sort =
+VAR _L1 = TBData[PL Level 1 Sort]
+VAR _L2 =
+    SWITCH (
+        TBData[PL Level 2],
+        "Total Residential Revenue", 1,
+        "Total SMB Revenue",         2,
+        "Total Field Operation",     1,
+        "Total Construction",        2,
+        9
+    )
+RETURN
+    _L1 * 100 + _L2
+
+
+// =====================================================================
+// MEASURES
+// =====================================================================
+// SIGN CONVENTION: this assumes costs are stored as POSITIVE numbers in
+// TBData[Amount]. If your trial balance carries costs as negatives (credit
+// convention), flip the subtractions to additions in Gross Profit and
+// Operating Income, and wrap Total COGS / Total OPEX in ABS() for display.
+// ---------------------------------------------------------------------
+
+Amount := SUM ( TBData[Amount] )
+
+Total Revenue :=
+CALCULATE ( [Amount], TBData[PL Level 1] = "Revenue" )
+
+Total COGS :=
+CALCULATE ( [Amount], TBData[PL Level 1] = "COGS" )
+
+Gross Profit :=
+[Total Revenue] - [Total COGS]
+
+Total OPEX :=
+CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" )
+
+Operating Income :=
+[Gross Profit] - [Total OPEX]
+
+Gross Margin % :=
+DIVIDE ( [Gross Profit], [Total Revenue] )
+
+
+// =====================================================================
+// OPTIONAL -- SUBTOTAL ROWS INSIDE THE MATRIX
+// =====================================================================
+// A plain matrix gives you section subtotals but CANNOT show "Total Revenue"
+// and "Gross Profit" as their own rows between sections, because Gross Profit
+// is arithmetic across two sections, not a rollup of one.
+//
+// To get the exact sketch layout, drive the matrix rows from a disconnected
+// layout table instead of from PL Level 1 directly:
+
+PL Layout =
+DATATABLE (
+    "Sort",     INTEGER,
+    "PL Line",  STRING,
+    "Row Type", STRING,
+    {
+        { 10, "Revenue",          "Section" },
+        { 20, "Total Revenue",    "Calc"    },
+        { 30, "COGS",             "Section" },
+        { 40, "Gross Profit",     "Calc"    },
+        { 50, "OPEX",             "Section" },
+        { 60, "Operating Income", "Calc"    }
+    }
+)
+
+// Leave 'PL Layout' with NO relationship to TBData. Put 'PL Layout'[PL Line]
+// in the matrix Rows (sorted by [Sort]), then PL Level 2 / PL Level 3 beneath
+// it, and use this measure as the value:
+
+PL Value :=
+VAR _Line = SELECTEDVALUE ( 'PL Layout'[PL Line] )
+RETURN
+    SWITCH (
+        _Line,
+        "Revenue",          CALCULATE ( [Amount], TBData[PL Level 1] = "Revenue" ),
+        "COGS",             CALCULATE ( [Amount], TBData[PL Level 1] = "COGS" ),
+        "OPEX",             CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" ),
+        "Total Revenue",    [Total Revenue],
+        "Gross Profit",     [Gross Profit],
+        "Operating Income", [Operating Income],
+        BLANK ()
+    )
+
+// Caveat: with the disconnected-table approach the Level 2 / Level 3 columns
+// no longer filter the Section rows automatically. If you go this route you
+// need a Section column on TBData matching 'PL Layout'[PL Line] and a
+// TREATAS in the Section branches:
+//
+//     CALCULATE (
+//         [Amount],
+//         TREATAS ( VALUES ( 'PL Layout'[PL Line] ), TBData[PL Level 1] )
+//     )
+//
+// The simpler alternative -- and what most P&L reports actually ship -- is to
+// keep the plain hierarchy matrix (Level 1 > Level 2 > Level 3) with subtotals
+// on, and show Gross Profit / Operating Income as cards or a small summary
+// matrix directly beneath it.
