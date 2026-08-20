@@ -10,7 +10,7 @@
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
 //              TBData[Cc]                           (COGS)
 //              "Bonus" if TBData[Matrix] = 286,     (OPEX)
-//              else CCMap[Primary Group Label]
+//              else TBData[Primary Group]
 //   Level 3  = TBData[PL Label]                     (Revenue)
 //              COGSMap[CTDesc Parent]               (COGS)
 //              CCMap[Cost Center]                   (OPEX)
@@ -126,64 +126,43 @@ DATATABLE (
 //    Revenue -> TBData[Revenue Row Label]
 //    COGS    -> TBData[Cc]
 //    OPEX    -> "Bonus" when TBData[Matrix] = 286,
-//               otherwise CCMap[Primary Group Label]
+//               otherwise TBData[Primary Group]
 // ---------------------------------------------------------------------
-// The Matrix 286 override applies ONLY inside OPEX. It is tested before the
-// CCMap label is used, so a bonus row shows "Bonus" instead of its own
-// department name.
+// The OPEX branch reads Primary Group straight off TBData -- no CCMap lookup
+// and no relationship dependency at this level. (CCMap is still needed for
+// Level 3.) The Matrix 286 override is tested first, so a bonus row shows
+// "Bonus" in place of its department name.
 
 PL Level 2 =
 VAR _Section = TBData[PL Level 1]
-VAR _CCGroup =
-    LOOKUPVALUE (
-        CCMap[Primary Group Label],
-        CCMap[Cost Center],             // *** KEY *** in CCMap
-        TBData[Cc]                      // *** KEY *** in TBData
-    )
-VAR _OpexLabel =
-    IF ( TBData[Matrix] = 286, "Bonus", _CCGroup )
 RETURN
     SWITCH (
         TRUE (),
         _Section = "Revenue", TBData[Revenue Row Label],
         _Section = "COGS",    TBData[Cc],
-        _Section = "OPEX",    _OpexLabel,
+        _Section = "OPEX",    IF ( TBData[Matrix] = 286, "Bonus", TBData[Primary Group] ),
         BLANK ()
     )
 
-// INTERACTION WITH LEVEL 1: "Bonus" is now also a value of
-// TBData[Primary Group], so a row can reach the Bonus line two ways --
-// Matrix = 286, or Primary Group = "Bonus". Those two paths must agree.
-// Check with a temporary table visual of TBData[Primary Group], TBData[Matrix]
-// and PL Level 2:
-//   - If EVERY Primary Group = "Bonus" row also has Matrix = 286 (and vice
-//     versa), the two rules are the same rule and the Matrix test is
-//     redundant -- see the simplification note below.
-//   - If they disagree, decide which one is authoritative. As written,
-//     Matrix = 286 wins, because it is tested before _CCGroup is used.
-//
-// SIMPLIFICATION: if TBData[Primary Group] already carries the department
-// name (including "Bonus"), the whole OPEX branch collapses to it and the
-// CCMap lookup disappears:
-//     VAR _OpexLabel = TBData[Primary Group]
-// That also removes the CCMap relationship dependency from Level 2. Compare
-// TBData[Primary Group] against CCMap[Primary Group Label] side by side; if
-// they match, take this version.
-//
-// TYPE NOTE: the test above assumes TBData[Matrix] is a NUMBER. If the column
-// is text (Column tools -> Data type says Text), the comparison silently never
-// matches -- quote the literal instead:
-//     VAR _OpexLabel = IF ( TBData[Matrix] = "286", "Bonus", _CCGroup )
-// Check the data type before assuming this works.
+// The two routes to Bonus now agree by construction: a row with
+// Primary Group = "Bonus" returns "Bonus" through the ELSE branch, and a row
+// with Matrix = 286 returns "Bonus" through the IF. No conflict is possible.
+// The override only changes rows whose Primary Group is a DEPARTMENT but
+// whose Matrix marks them as bonus -- which is the point of it.
 
-// CONSEQUENCE: every Matrix 286 row, from EVERY department, now collapses
-// into one "Bonus" group at Level 2. Department subtotals therefore EXCLUDE
-// bonus. That is the usual reason to do this -- bonus reported as its own
-// P&L line -- but confirm it is what Finance wants, because
-// "Direct Field Operations" will no longer tie to its full cost.
+// TYPE NOTE: the test assumes TBData[Matrix] is a NUMBER. If the column is
+// Text (Column tools -> Data type), the comparison never matches and no error
+// is raised -- every bonus row silently keeps its department name. Quote the
+// literal in that case:
+//     IF ( TBData[Matrix] = "286", "Bonus", TBData[Primary Group] )
+
+// CONSEQUENCE: Matrix 286 rows from EVERY department collapse into one
+// "Bonus" group, so department subtotals EXCLUDE bonus. That is the usual
+// intent -- bonus reported as its own P&L line -- but it does mean
+// "Direct Field Operations" no longer ties to its fully loaded cost.
 //
-// If instead bonus should sit UNDER each department (Level 3 rather than
-// Level 2), leave PL Level 2 alone and put the override in PL Level 3:
+// If bonus should instead sit UNDER each department, leave Level 2 as plain
+// TBData[Primary Group] and put the override in PL Level 3 instead:
 //     _Section = "OPEX", IF ( TBData[Matrix] = 286, "Bonus", _CostCenter ),
 
 

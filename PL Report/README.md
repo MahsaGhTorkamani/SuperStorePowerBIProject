@@ -11,7 +11,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
 | **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `TBData[Primary Group]` in the department list ** |
-| **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `CCMap[Primary Group Label]` |
+| **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `TBData[Primary Group]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
 
@@ -122,12 +122,9 @@ operating income figure.
    `Operating Income`.
 6. **`078` / `106`** — I read these as cost-center codes appearing as COGS
    Level 2, which matches `TBData[Cc]` feeding that slot. Confirm.
-7. **`TBData[Primary Group]` vs `CCMap[Primary Group Label]`** — these look
-   like the same concept in two places. If `TBData[Primary Group]` already
-   carries the department name, the OPEX branch of `PL Level 2` can use it
-   directly and the `CCMap` lookup becomes unnecessary. Worth checking: it
-   removes a lookup and a relationship dependency. Left as you specified
-   (`CCMap`) until confirmed.
+7. ~~`TBData[Primary Group]` vs `CCMap[Primary Group Label]`~~ — **resolved**:
+   Level 2 now reads `TBData[Primary Group]` directly. `CCMap` is no longer
+   used at Level 2 at all, though it is still required for Level 3.
 8. **OPEX department order** — `PL Level 2 Sort` orders them direct
    operations → commercial → support → overhead, with `Bonus` last.
    Renumber to match how Finance presents the P&L.
@@ -139,13 +136,9 @@ operating income figure.
     reported as its own line and department subtotals **exclude** it. If
     bonus should instead sit under each department, move the override into
     `PL Level 3` (shown inline in the `.dax` file) and leave Level 2 alone.
-11. **Two routes to Bonus** — `Bonus` is now both a `Primary Group` value
-    (Level 1) and the result of the `Matrix` = 286 test (Level 2). Confirm
-    the two agree: does every `Primary Group` = `"Bonus"` row also carry
-    `Matrix` = 286? If yes, the Matrix test is redundant and `PL Level 2`
-    can simply use `TBData[Primary Group]` for OPEX, dropping the `CCMap`
-    lookup entirely. If no, they classify different rows and you need to
-    decide which is authoritative — as written, `Matrix` = 286 wins.
+11. ~~Two routes to Bonus~~ — **resolved**: with the OPEX branch reading
+    `IF ( Matrix = 286, "Bonus", Primary Group )`, both routes land on
+    `"Bonus"` by construction and cannot disagree.
 
 ## Note on this repo
 
