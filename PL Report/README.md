@@ -66,7 +66,12 @@ needing three visuals stitched together, which breaks subtotals and sorting.
    column* → `PL Level 1 Sort`. Repeat for `PL Level 2` → `PL Level 2 Sort`.
 
 4. **Add the measures** (`Amount`, `Total Revenue`, `Total COGS`,
-   `Gross Profit`, `Total OPEX`, `Operating Income`, `Gross Margin %`).
+   `Gross Profit`, `Total OPEX`, `Adjusted EBITDA`, `Gross Margin %`,
+   `Adjusted EBITDA Margin %`).
+
+   ```dax
+   Adjusted EBITDA := [Total Revenue] - [Total COGS] - [Total OPEX]
+   ```
 
 5. **Build the matrix**:
    - *Rows*: `PL Level 1`, `PL Level 2`, `PL Level 3` (in that order)
@@ -76,15 +81,17 @@ needing three visuals stitched together, which breaks subtotals and sorting.
    - Format pane → *Row subtotals* **On**, and set *Stepped layout* **Off**
      so each level gets its own indented column like the drawing.
 
-6. **Gross Profit / Total Revenue rows**: a plain matrix can't place these
-   between sections (Gross Profit spans two sections, so it isn't a rollup of
-   any one of them). Two options, both at the bottom of the `.dax` file:
-   - **Simple** — keep the hierarchy matrix and put Gross Profit / Operating
-     Income in cards or a small summary matrix underneath. This is what most
-     production P&L reports do.
-   - **Exact layout** — drive the rows from the disconnected `PL Layout`
-     table and swap `[Amount]` for the `[PL Value]` measure. More faithful to
-     the sketch, more moving parts; the `TREATAS` caveat is documented inline.
+6. **Calculated rows — Total Revenue, Gross Profit, Adjusted EBITDA**: these
+   cannot be values of `PL Level 1`. That column is a *calculated column*, so
+   every value it produces is a label stamped on a real trial-balance row.
+   Adjusted EBITDA is arithmetic **across** three sections, not a set of rows,
+   so there is nothing for the column to label. Two ways to get the rows:
+   - **Approach A (start here)** — keep the hierarchy matrix and show
+     `[Gross Profit]` and `[Adjusted EBITDA]` in cards or a one-row matrix
+     beneath it. Nothing to build beyond the measures; always correct.
+   - **Approach B** — drive the matrix rows from the disconnected `PL Layout`
+     table and use `[PL Value]` instead of `[Amount]`. Gives the exact sketch
+     layout, Adjusted EBITDA included. Full setup in the `.dax` file.
 
 ## Validation
 
@@ -98,8 +105,7 @@ Then cross-check the OPEX test on its own: put `TBData[Primary Group]` and
 `OPEX`; if one shows `Unmapped`, the string in the DAX does not match the
 string in the data (almost always a trailing space, or the `&` / `/` in
 `G&A`, `Direct Legal & Regulatory`, `BI/Product`). Finally check that
-`[Total Revenue] - [Total COGS] - [Total OPEX]` reconciles to your existing
-operating income figure.
+`[Adjusted EBITDA]` reconciles to the figure Finance already reports.
 
 ## Open questions
 
@@ -118,8 +124,10 @@ operating income figure.
    If it's identical to `TBData[Cc]` the lookup is redundant and you should
    use `TBData[Cc]` directly.
 5. **Sign convention** — the DAX assumes costs are stored positive. If your
-   TB carries them as negatives, flip the subtractions in `Gross Profit` and
-   `Operating Income`.
+   TB carries them as negatives, every subtraction becomes an addition:
+   `Adjusted EBITDA := [Total Revenue] + [Total COGS] + [Total OPEX]`.
+   This one silently produces plausible-looking wrong numbers, so check a
+   COGS row in Data view before trusting the output.
 6. **`078` / `106`** — I read these as cost-center codes appearing as COGS
    Level 2, which matches `TBData[Cc]` feeding that slot. Confirm.
 7. ~~`TBData[Primary Group]` vs `CCMap[Primary Group Label]`~~ — **resolved**:
@@ -139,6 +147,14 @@ operating income figure.
 11. ~~Two routes to Bonus~~ — **resolved**: with the OPEX branch reading
     `IF ( Matrix = 286, "Bonus", Primary Group )`, both routes land on
     `"Bonus"` by construction and cannot disagree.
+12. **Is it EBITDA or operating income?** — EBITDA excludes Depreciation and
+    Amortisation. `Revenue − COGS − OPEX` is what you specified and is what
+    the measure does, but if D&A accounts sit inside any of the 12 OPEX
+    departments the result is operating income, not EBITDA. If they do, they
+    need filtering out of `Total OPEX` (pattern shown in the `.dax` file).
+13. **"Adjusted"** — the name usually implies add-backs (one-off items,
+    stock comp, management fees). None are applied here. If Finance's
+    Adjusted EBITDA carries add-backs, they need adding to the measure.
 
 ## Note on this repo
 

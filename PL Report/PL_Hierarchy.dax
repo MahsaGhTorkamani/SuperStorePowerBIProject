@@ -33,6 +33,11 @@
 // whose Primary Group is one of the 12 operating departments below is OPEX,
 // regardless of what the BellcorpMap chain says.
 //
+// This column produces ONLY Revenue / COGS / OPEX. Adjusted EBITDA, Gross
+// Profit and Total Revenue cannot appear here -- they are arithmetic across
+// sections, not labels on trial-balance rows. See the "ADJUSTED EBITDA AS A
+// ROW IN THE MATRIX" section at the end of this file.
+//
 // Everything that is NOT one of those departments falls through to
 // BellcorpMap[LineItem], reached two hops away through a bridge table:
 //
@@ -271,9 +276,10 @@ RETURN
 // MEASURES
 // =====================================================================
 // SIGN CONVENTION: this assumes costs are stored as POSITIVE numbers in
-// TBData[Amount]. If your trial balance carries costs as negatives (credit
-// convention), flip the subtractions to additions in Gross Profit and
-// Operating Income, and wrap Total COGS / Total OPEX in ABS() for display.
+// TBData[Amount]. If your trial balance carries costs as NEGATIVES (credit
+// convention), every subtraction below becomes an addition:
+//     Adjusted EBITDA := [Total Revenue] + [Total COGS] + [Total OPEX]
+// Check one COGS row in Data view before trusting these numbers.
 // ---------------------------------------------------------------------
 
 Amount := SUM ( TBData[Amount] )
@@ -290,22 +296,62 @@ Gross Profit :=
 Total OPEX :=
 CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" )
 
-Operating Income :=
-[Gross Profit] - [Total OPEX]
+Adjusted EBITDA :=
+[Total Revenue] - [Total COGS] - [Total OPEX]
 
 Gross Margin % :=
 DIVIDE ( [Gross Profit], [Total Revenue] )
 
+Adjusted EBITDA Margin % :=
+DIVIDE ( [Adjusted EBITDA], [Total Revenue] )
+
+// D&A CAVEAT: EBITDA excludes Depreciation and Amortisation. The formula
+// above is Revenue - COGS - OPEX exactly as specified, so if any D&A accounts
+// sit inside the 12 OPEX departments, this is operating income, not EBITDA.
+// To exclude them, filter the accounts out of Total OPEX, e.g.
+//     Total OPEX :=
+//     CALCULATE (
+//         [Amount],
+//         TBData[PL Level 1] = "OPEX",
+//         NOT TBData[Account] IN { <D&A account codes> }
+//     )
+// Confirm with Finance which accounts are in scope before changing this.
+
 
 // =====================================================================
-// OPTIONAL -- SUBTOTAL ROWS INSIDE THE MATRIX
+// ADJUSTED EBITDA AS A ROW IN THE MATRIX
 // =====================================================================
-// A plain matrix gives you section subtotals but CANNOT show "Total Revenue"
-// and "Gross Profit" as their own rows between sections, because Gross Profit
-// is arithmetic across two sections, not a rollup of one.
+// IMPORTANT -- why this is NOT another value in the PL Level 1 column:
 //
-// To get the exact sketch layout, drive the matrix rows from a disconnected
-// layout table instead of from PL Level 1 directly:
+// PL Level 1 is a CALCULATED COLUMN. Every value it produces is a label
+// stamped onto an actual trial-balance row. Adjusted EBITDA is not a set of
+// rows -- it is arithmetic ACROSS three sets of rows. No TB row "is" Adjusted
+// EBITDA, so there is nothing for the column to label. Adding
+// "Adjusted EBITDA" to the SWITCH in PL Level 1 is not possible: it would
+// have to steal rows from Revenue, COGS or OPEX, and those rows are already
+// counted once in their own section. The same is true of Total Revenue and
+// Gross Profit.
+//
+// Calculated rows must therefore come from a disconnected LAYOUT table that
+// supplies the row headers, with a measure deciding what each row evaluates.
+// Pick ONE of the two approaches below.
+
+
+// ---------------------------------------------------------------------
+// APPROACH A (recommended to start) -- two visuals
+// ---------------------------------------------------------------------
+// Keep the plain hierarchy matrix (PL Level 1 > 2 > 3, subtotals on) and put
+// [Gross Profit] and [Adjusted EBITDA] in Card visuals or a small one-row
+// matrix directly beneath it. Nothing further to build -- the measures above
+// are all you need. This is what most production P&L reports ship, and it is
+// always arithmetically correct.
+
+
+// ---------------------------------------------------------------------
+// APPROACH B -- one matrix with Adjusted EBITDA as a real row
+// ---------------------------------------------------------------------
+// Gives the exact sketch layout. The row headers come from PL Layout instead
+// of from PL Level 1.
 
 PL Layout =
 DATATABLE (
@@ -313,44 +359,52 @@ DATATABLE (
     "PL Line",  STRING,
     "Row Type", STRING,
     {
-        { 10, "Revenue",          "Section" },
-        { 20, "Total Revenue",    "Calc"    },
-        { 30, "COGS",             "Section" },
-        { 40, "Gross Profit",     "Calc"    },
-        { 50, "OPEX",             "Section" },
-        { 60, "Operating Income", "Calc"    }
+        { 10, "Revenue",         "Section" },
+        { 20, "Total Revenue",   "Calc"    },
+        { 30, "COGS",            "Section" },
+        { 40, "Gross Profit",    "Calc"    },
+        { 50, "OPEX",            "Section" },
+        { 60, "Adjusted EBITDA", "Calc"    }
     }
 )
 
-// Leave 'PL Layout' with NO relationship to TBData. Put 'PL Layout'[PL Line]
-// in the matrix Rows (sorted by [Sort]), then PL Level 2 / PL Level 3 beneath
-// it, and use this measure as the value:
+// Setup:
+//   1. Leave PL Layout DISCONNECTED -- no relationship to anything.
+//   2. Sort PL Line by Sort (select PL Line -> Column tools -> Sort by column).
+//   3. Matrix Rows: 'PL Layout'[PL Line], then TBData[PL Level 2],
+//      then TBData[PL Level 3].
+//   4. Matrix Values: [PL Value] (below), NOT [Amount].
+//   5. Format pane -> turn "Show items with no data" OFF, so the Calc rows
+//      do not sprout empty children.
 
 PL Value :=
 VAR _Line = SELECTEDVALUE ( 'PL Layout'[PL Line] )
+VAR _Type = SELECTEDVALUE ( 'PL Layout'[Row Type] )
+VAR _IsDrilled = ISINSCOPE ( TBData[PL Level 2] )
 RETURN
-    SWITCH (
-        _Line,
-        "Revenue",          CALCULATE ( [Amount], TBData[PL Level 1] = "Revenue" ),
-        "COGS",             CALCULATE ( [Amount], TBData[PL Level 1] = "COGS" ),
-        "OPEX",             CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" ),
-        "Total Revenue",    [Total Revenue],
-        "Gross Profit",     [Gross Profit],
-        "Operating Income", [Operating Income],
-        BLANK ()
+    IF (
+        // a Calc row has no detail to break down -- blank it when drilled
+        _Type = "Calc" && _IsDrilled,
+        BLANK (),
+        SWITCH (
+            _Line,
+            "Revenue",         CALCULATE ( [Amount], TBData[PL Level 1] = "Revenue" ),
+            "COGS",            CALCULATE ( [Amount], TBData[PL Level 1] = "COGS" ),
+            "OPEX",            CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" ),
+            "Total Revenue",   [Total Revenue],
+            "Gross Profit",    [Gross Profit],
+            "Adjusted EBITDA", [Adjusted EBITDA],
+            BLANK ()
+        )
     )
 
-// Caveat: with the disconnected-table approach the Level 2 / Level 3 columns
-// no longer filter the Section rows automatically. If you go this route you
-// need a Section column on TBData matching 'PL Layout'[PL Line] and a
-// TREATAS in the Section branches:
+// How the filtering works: PL Level 2 and PL Level 3 are columns ON TBData,
+// so when the matrix drills into them they filter TBData directly. The
+// CALCULATE in each Section branch then narrows that to the right section.
+// PL Layout contributes only the row label -- it filters nothing, which is
+// exactly why the Calc rows can reach across sections.
 //
-//     CALCULATE (
-//         [Amount],
-//         TREATAS ( VALUES ( 'PL Layout'[PL Line] ), TBData[PL Level 1] )
-//     )
-//
-// The simpler alternative -- and what most P&L reports actually ship -- is to
-// keep the plain hierarchy matrix (Level 1 > Level 2 > Level 3) with subtotals
-// on, and show Gross Profit / Operating Income as cards or a small summary
-// matrix directly beneath it.
+// Grand total: SELECTEDVALUE returns BLANK when several PL Lines are in
+// scope, so the total row falls to the final BLANK(). If you want Adjusted
+// EBITDA on the total row instead, replace that last BLANK() with
+// [Adjusted EBITDA].
