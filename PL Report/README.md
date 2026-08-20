@@ -20,11 +20,11 @@ bridge table: `TBData` → `BellPLMap` → `BellcorpMap`, the second hop joining
 on `Row`.
 
 \*\* OPEX is decided **first**, before the `BellcorpMap` lookup runs. A row is
-OPEX when `TBData[Primary Group]` is one of these 11 operating departments:
+OPEX when `TBData[Primary Group]` is one of these 12 operating departments:
 
 `BI/Product` · `Commercial Sales` · `Construction` · `Consumer Sales` ·
 `Corporate Marketing` · `Direct Field Operations` · `Direct Legal & Regulatory` ·
-`G&A` · `Headquarters Expenses` · `Logistics` · `Technology`
+`G&A` · `Bonus` · `Headquarters Expenses` · `Logistics` · `Technology`
 
 Everything else falls through to `BellcorpMap[LineItem]`, which is what
 classifies Revenue and COGS.
@@ -94,7 +94,7 @@ see exactly `Revenue`, `COGS`, `OPEX` and nothing else. Any rows landing under
 nor resolvable through `BellcorpMap` — chase those before trusting the totals.
 
 Then cross-check the OPEX test on its own: put `TBData[Primary Group]` and
-`PL Level 1` in a table together. Every one of the 11 departments must show
+`PL Level 1` in a table together. Every one of the 12 departments must show
 `OPEX`; if one shows `Unmapped`, the string in the DAX does not match the
 string in the data (almost always a trailing space, or the `&` / `/` in
 `G&A`, `Direct Legal & Regulatory`, `BI/Product`). Finally check that
@@ -139,6 +139,13 @@ operating income figure.
     reported as its own line and department subtotals **exclude** it. If
     bonus should instead sit under each department, move the override into
     `PL Level 3` (shown inline in the `.dax` file) and leave Level 2 alone.
+11. **Two routes to Bonus** — `Bonus` is now both a `Primary Group` value
+    (Level 1) and the result of the `Matrix` = 286 test (Level 2). Confirm
+    the two agree: does every `Primary Group` = `"Bonus"` row also carry
+    `Matrix` = 286? If yes, the Matrix test is redundant and `PL Level 2`
+    can simply use `TBData[Primary Group]` for OPEX, dropping the `CCMap`
+    lookup entirely. If no, they classify different rows and you need to
+    decide which is authoritative — as written, `Matrix` = 286 wins.
 
 ## Note on this repo
 

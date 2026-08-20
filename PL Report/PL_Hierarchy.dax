@@ -4,7 +4,7 @@
 // Builds the 3 visible columns of the P&L matrix. Each level pulls from a
 // different source table depending on which Level 1 section the row is in.
 //
-//   Level 1  = "OPEX" when TBData[Primary Group] is one of the 11 operating
+//   Level 1  = "OPEX" when TBData[Primary Group] is one of the 12 operating
 //              departments; otherwise BellcorpMap[LineItem], reached via
 //              TBData -> BellPLMap -> BellcorpMap (on "Row")
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
@@ -30,7 +30,7 @@
 // 1. LEVEL 1  -- Revenue / COGS / OPEX
 // ---------------------------------------------------------------------
 // OPEX is decided FIRST, by a value test on TBData[Primary Group]. Any row
-// whose Primary Group is one of the 11 operating departments below is OPEX,
+// whose Primary Group is one of the 12 operating departments below is OPEX,
 // regardless of what the BellcorpMap chain says.
 //
 // Everything that is NOT one of those departments falls through to
@@ -54,6 +54,7 @@ VAR _IsOpex =
             "Direct Field Operations",
             "Direct Legal & Regulatory",
             "G&A",
+            "Bonus",
             "Headquarters Expenses",
             "Logistics",
             "Technology"
@@ -74,8 +75,8 @@ VAR _IsOpex =
         IN {
             "BI/Product", "Commercial Sales", "Construction", "Consumer Sales",
             "Corporate Marketing", "Direct Field Operations",
-            "Direct Legal & Regulatory", "G&A", "Headquarters Expenses",
-            "Logistics", "Technology"
+            "Direct Legal & Regulatory", "G&A", "Bonus",
+            "Headquarters Expenses", "Logistics", "Technology"
         }
 VAR _Row =
     LOOKUPVALUE (
@@ -103,8 +104,8 @@ DATATABLE (
         { "BI/Product" }, { "Commercial Sales" }, { "Construction" },
         { "Consumer Sales" }, { "Corporate Marketing" },
         { "Direct Field Operations" }, { "Direct Legal & Regulatory" },
-        { "G&A" }, { "Headquarters Expenses" }, { "Logistics" },
-        { "Technology" }
+        { "G&A" }, { "Bonus" }, { "Headquarters Expenses" },
+        { "Logistics" }, { "Technology" }
     }
 )
 
@@ -150,6 +151,25 @@ RETURN
         BLANK ()
     )
 
+// INTERACTION WITH LEVEL 1: "Bonus" is now also a value of
+// TBData[Primary Group], so a row can reach the Bonus line two ways --
+// Matrix = 286, or Primary Group = "Bonus". Those two paths must agree.
+// Check with a temporary table visual of TBData[Primary Group], TBData[Matrix]
+// and PL Level 2:
+//   - If EVERY Primary Group = "Bonus" row also has Matrix = 286 (and vice
+//     versa), the two rules are the same rule and the Matrix test is
+//     redundant -- see the simplification note below.
+//   - If they disagree, decide which one is authoritative. As written,
+//     Matrix = 286 wins, because it is tested before _CCGroup is used.
+//
+// SIMPLIFICATION: if TBData[Primary Group] already carries the department
+// name (including "Bonus"), the whole OPEX branch collapses to it and the
+// CCMap lookup disappears:
+//     VAR _OpexLabel = TBData[Primary Group]
+// That also removes the CCMap relationship dependency from Level 2. Compare
+// TBData[Primary Group] against CCMap[Primary Group Label] side by side; if
+// they match, take this version.
+//
 // TYPE NOTE: the test above assumes TBData[Matrix] is a NUMBER. If the column
 // is text (Column tools -> Data type says Text), the comparison silently never
 // matches -- quote the literal instead:
