@@ -11,7 +11,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
 | **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `TBData[Primary Group]` in the department list ** |
-| **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `CCMap[Primary Group Label]` |
+| **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `CCMap[Primary Group Label]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
 
@@ -129,8 +129,16 @@ operating income figure.
    removes a lookup and a relationship dependency. Left as you specified
    (`CCMap`) until confirmed.
 8. **OPEX department order** — `PL Level 2 Sort` orders them direct
-   operations → commercial → support → overhead. Renumber to match how
-   Finance presents the P&L.
+   operations → commercial → support → overhead, with `Bonus` last.
+   Renumber to match how Finance presents the P&L.
+9. **`Matrix` data type** — the `= 286` test assumes a numeric column. If
+   `Matrix` is text the comparison never matches and every bonus row keeps
+   its department name, with no error raised. Check Column tools → Data type
+   and quote the literal (`= "286"`) if it is text.
+10. **Bonus placement** — pulling Matrix 286 up to Level 2 means bonus is
+    reported as its own line and department subtotals **exclude** it. If
+    bonus should instead sit under each department, move the override into
+    `PL Level 3` (shown inline in the `.dax` file) and leave Level 2 alone.
 
 ## Note on this repo
 

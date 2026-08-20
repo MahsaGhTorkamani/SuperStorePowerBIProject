@@ -9,7 +9,8 @@
 //              TBData -> BellPLMap -> BellcorpMap (on "Row")
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
 //              TBData[Cc]                           (COGS)
-//              CCMap[Primary Group Label]           (OPEX)
+//              "Bonus" if TBData[Matrix] = 286,     (OPEX)
+//              else CCMap[Primary Group Label]
 //   Level 3  = TBData[PL Label]                     (Revenue)
 //              COGSMap[CTDesc Parent]               (COGS)
 //              CCMap[Cost Center]                   (OPEX)
@@ -123,8 +124,13 @@ DATATABLE (
 // 2. LEVEL 2  -- the blue column
 //    Revenue -> TBData[Revenue Row Label]
 //    COGS    -> TBData[Cc]
-//    OPEX    -> CCMap[Primary Group Label]
+//    OPEX    -> "Bonus" when TBData[Matrix] = 286,
+//               otherwise CCMap[Primary Group Label]
 // ---------------------------------------------------------------------
+// The Matrix 286 override applies ONLY inside OPEX. It is tested before the
+// CCMap label is used, so a bonus row shows "Bonus" instead of its own
+// department name.
+
 PL Level 2 =
 VAR _Section = TBData[PL Level 1]
 VAR _CCGroup =
@@ -133,14 +139,32 @@ VAR _CCGroup =
         CCMap[Cost Center],             // *** KEY *** in CCMap
         TBData[Cc]                      // *** KEY *** in TBData
     )
+VAR _OpexLabel =
+    IF ( TBData[Matrix] = 286, "Bonus", _CCGroup )
 RETURN
     SWITCH (
         TRUE (),
         _Section = "Revenue", TBData[Revenue Row Label],
         _Section = "COGS",    TBData[Cc],
-        _Section = "OPEX",    _CCGroup,
+        _Section = "OPEX",    _OpexLabel,
         BLANK ()
     )
+
+// TYPE NOTE: the test above assumes TBData[Matrix] is a NUMBER. If the column
+// is text (Column tools -> Data type says Text), the comparison silently never
+// matches -- quote the literal instead:
+//     VAR _OpexLabel = IF ( TBData[Matrix] = "286", "Bonus", _CCGroup )
+// Check the data type before assuming this works.
+
+// CONSEQUENCE: every Matrix 286 row, from EVERY department, now collapses
+// into one "Bonus" group at Level 2. Department subtotals therefore EXCLUDE
+// bonus. That is the usual reason to do this -- bonus reported as its own
+// P&L line -- but confirm it is what Finance wants, because
+// "Direct Field Operations" will no longer tie to its full cost.
+//
+// If instead bonus should sit UNDER each department (Level 3 rather than
+// Level 2), leave PL Level 2 alone and put the override in PL Level 3:
+//     _Section = "OPEX", IF ( TBData[Matrix] = 286, "Bonus", _CostCenter ),
 
 
 // ---------------------------------------------------------------------
@@ -236,6 +260,8 @@ VAR _L2 =
         "Direct Legal & Regulatory",  9,
         "Headquarters Expenses",     10,
         "G&A",                       11,
+        // Matrix 286 rows, pulled out of their departments
+        "Bonus",                     12,
         99
     )
 RETURN
