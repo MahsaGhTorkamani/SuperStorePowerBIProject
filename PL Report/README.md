@@ -10,7 +10,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
-| **Level 1** (Revenue / COGS / OPEX) | `BellcorpMap[LineItem]` * | `BellcorpMap[LineItem]` * | `TBData[Primary Group]` in the department list ** |
+| **Level 1** (Revenue / COGS / OPEX) | `LineItem` = `"Revenue"` * | `LineItem` = `"COGS"` **and** `TBData[Segment]` < 116 * | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
 | **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `TBData[Primary Group]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
@@ -19,15 +19,22 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 bridge table: `TBData` → `BellPLMap` → `BellcorpMap`, the second hop joining
 on `Row`.
 
-\*\* OPEX is decided **first**, before the `BellcorpMap` lookup runs. A row is
-OPEX when `TBData[Primary Group]` is one of these 12 operating departments:
+Level 1 runs **four gates in strict order** — first match wins:
 
-`BI/Product` · `Commercial Sales` · `Construction` · `Consumer Sales` ·
-`Corporate Marketing` · `Direct Field Operations` · `Direct Legal & Regulatory` ·
-`G&A` · `Bonus` · `Headquarters Expenses` · `Logistics` · `Technology`
+| # | Test | Result |
+|---|---|---|
+| 1 | `LineItem` = `"Revenue"` | `Revenue` |
+| 2 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
+| 3 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
+| 4 | otherwise | `LineItem`, or `Unmapped` if that is blank |
 
-Everything else falls through to `BellcorpMap[LineItem]`, which is what
-classifies Revenue and COGS.
+Gate 2 is a *release valve*, not a filter: a COGS row with `Segment` ≥ 116
+falls through to gate 3 where it can be reclassified as OPEX. If it isn't in
+`OPEXMap` either, gate 4 returns `COGS` anyway — its own `LineItem`. No row is
+lost by failing the Segment test.
+
+The `Primary Group` department list no longer classifies Level 1. It is still
+used to *label* OPEX rows at Level 2 — see open question 14.
 
 ## Why calculated columns and not three separate visuals
 
@@ -100,12 +107,13 @@ see exactly `Revenue`, `COGS`, `OPEX` and nothing else. Any rows landing under
 **"Unmapped"** are trial-balance accounts that are neither an OPEX department
 nor resolvable through `BellcorpMap` — chase those before trusting the totals.
 
-Then cross-check the OPEX test on its own: put `TBData[Primary Group]` and
-`PL Level 1` in a table together. Every one of the 12 departments must show
-`OPEX`; if one shows `Unmapped`, the string in the DAX does not match the
-string in the data (almost always a trailing space, or the `&` / `/` in
-`G&A`, `Direct Legal & Regulatory`, `BI/Product`). Finally check that
-`[Adjusted EBITDA]` reconciles to the figure Finance already reports.
+Then check each gate separately with three throwaway columns (they're in the
+`.dax` file): `Debug LineItem`, `Debug Segment`, `Debug InOpex`. Put them
+beside `PL Level 1` in a table with `[Amount]`. A row on `Unmapped` has both a
+blank `LineItem` **and** no `OPEXMap` match — that's the list for Finance.
+
+Finally check that `[Adjusted EBITDA]` reconciles to the figure Finance
+already reports.
 
 ## Open questions
 
@@ -155,6 +163,17 @@ string in the data (almost always a trailing space, or the `&` / `/` in
 13. **"Adjusted"** — the name usually implies add-backs (one-off items,
     stock comp, management fees). None are applied here. If Finance's
     Adjusted EBITDA carries add-backs, they need adding to the measure.
+14. **Level 1 and Level 2 now use different OPEX definitions** — Level 1
+    decides OPEX from `OPEXMap[CTDesc]`; Level 2 still labels those rows with
+    `TBData[Primary Group]`. A row can be OPEX under the new rule while
+    carrying a Primary Group outside the 12 departments, and that stray value
+    becomes a Level 2 row header. Diagnostic and a catch-all fix are in the
+    `.dax` file.
+15. **`Segment` data type and boundary** — `< 116` assumes a numeric column;
+    as text it compares alphabetically and misfires silently. Also confirm
+    whether 116 itself should be COGS (`<=` rather than `<`).
+16. **`Account Desc` ↔ `CTDesc` matching** — exact string equality. Trim both
+    in Power Query first; one trailing space drops a row out of OPEX.
 
 ## Note on this repo
 

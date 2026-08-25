@@ -4,9 +4,11 @@
 // Builds the 3 visible columns of the P&L matrix. Each level pulls from a
 // different source table depending on which Level 1 section the row is in.
 //
-//   Level 1  = "OPEX" when TBData[Primary Group] is one of the 12 operating
-//              departments; otherwise BellcorpMap[LineItem], reached via
-//              TBData -> BellPLMap -> BellcorpMap (on "Row")
+//   Level 1  = "Revenue"  if BellcorpMap[LineItem] = "Revenue"
+//              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
+//              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
+//              else LineItem, or "Unmapped" when that is blank
+//              (LineItem via TBData -> BellPLMap -> BellcorpMap on "Row")
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
 //              TBData[Cc]                           (COGS)
 //              "Bonus" if TBData[Matrix] = 286,     (OPEX)
@@ -29,60 +31,53 @@
 // ---------------------------------------------------------------------
 // 1. LEVEL 1  -- Revenue / COGS / OPEX
 // ---------------------------------------------------------------------
-// OPEX is decided FIRST, by a value test on TBData[Primary Group]. Any row
-// whose Primary Group is one of the 12 operating departments below is OPEX,
-// regardless of what the BellcorpMap chain says.
+// Four gates, tested strictly in this order. The first one that matches wins:
 //
-// This column produces ONLY Revenue / COGS / OPEX. Adjusted EBITDA, Gross
-// Profit and Total Revenue cannot appear here -- they are arithmetic across
-// sections, not labels on trial-balance rows. See the "ADJUSTED EBITDA AS A
-// ROW IN THE MATRIX" section at the end of this file.
+//   1. LineItem = "Revenue"                        -> "Revenue"
+//   2. LineItem = "COGS" AND Segment < 116         -> "COGS"
+//   3. Account Desc found in OPEXMap[CTDesc]       -> "OPEX"
+//   4. otherwise                                   -> LineItem
+//      ...and if LineItem is blank                 -> "Unmapped"
 //
-// Everything that is NOT one of those departments falls through to
-// BellcorpMap[LineItem], reached two hops away through a bridge table:
+// Note what gate 2 does: a COGS row with Segment >= 116 does NOT stop there.
+// It falls through to gate 3, where it can be reclassified as OPEX. If it is
+// not in OPEXMap either, gate 4 returns "COGS" anyway (that is its LineItem).
+// So the Segment test is a gate that lets high-segment COGS rows escape into
+// OPEX -- it never loses a row.
+//
+// LineItem comes from BellcorpMap, two hops away through a bridge table:
 //
 //     TBData --many-to-one--> BellPLMap --many-to-one--> BellcorpMap
 //                                        (joined on "Row")
 //
 // RELATED() follows a chain of many-to-one relationships across any number
 // of hops, so with both arrows pointing away from TBData it is a one-liner.
+//
+// This column produces ONLY Revenue / COGS / OPEX (plus any other LineItem
+// value and "Unmapped"). Adjusted EBITDA, Gross Profit and Total Revenue
+// cannot appear here -- they are arithmetic across sections, not labels on
+// trial-balance rows. See the last section of this file.
 
 PL Level 1 =
-VAR _IsOpex =
-    TBData[Primary Group]
-        IN {
-            "BI/Product",
-            "Commercial Sales",
-            "Construction",
-            "Consumer Sales",
-            "Corporate Marketing",
-            "Direct Field Operations",
-            "Direct Legal & Regulatory",
-            "G&A",
-            "Bonus",
-            "Headquarters Expenses",
-            "Logistics",
-            "Technology"
-        }
 VAR _LineItem = RELATED ( BellcorpMap[LineItem] )
+VAR _IsOpex =
+    TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
 RETURN
-    IF ( _IsOpex, "OPEX", COALESCE ( _LineItem, "Unmapped" ) )
+    SWITCH (
+        TRUE (),
+        _LineItem = "Revenue",                        "Revenue",
+        _LineItem = "COGS" && TBData[Segment] < 116,  "COGS",
+        _IsOpex,                                      "OPEX",
+        COALESCE ( _LineItem, "Unmapped" )
+    )
 
 
 // -- FALLBACK for the BellcorpMap hop: use this when no relationships exist,
 //    or when BellPLMap is the "one" side of BOTH relationships (the path from
 //    TBData is then many->one then one->many, which RELATED cannot walk).
-//    Only the _LineItem VAR changes; the OPEX test is identical.
+//    Only the _LineItem VAR changes; the four gates are identical.
 
 PL Level 1 =
-VAR _IsOpex =
-    TBData[Primary Group]
-        IN {
-            "BI/Product", "Commercial Sales", "Construction", "Consumer Sales",
-            "Corporate Marketing", "Direct Field Operations",
-            "Direct Legal & Regulatory", "G&A", "Bonus",
-            "Headquarters Expenses", "Logistics", "Technology"
-        }
 VAR _Row =
     LOOKUPVALUE (
         BellPLMap[Row],
@@ -94,36 +89,57 @@ VAR _LineItem =
         BellcorpMap[LineItem],
         BellcorpMap[Row], _Row          // BellcorpMap <-> BellPLMap join on "Row"
     )
+VAR _IsOpex =
+    TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
 RETURN
-    IF ( _IsOpex, "OPEX", COALESCE ( _LineItem, "Unmapped" ) )
+    SWITCH (
+        TRUE (),
+        _LineItem = "Revenue",                        "Revenue",
+        _LineItem = "COGS" && TBData[Segment] < 116,  "COGS",
+        _IsOpex,                                      "OPEX",
+        COALESCE ( _LineItem, "Unmapped" )
+    )
 
 
-// -- MAINTAINABLE VARIANT: if the department list changes often, put it in
-//    its own table so it is edited in one place instead of inside the DAX.
-//    Leave OpexGroups DISCONNECTED -- no relationship to anything.
+// -- THE OPEX MEMBERSHIP TEST
+//    "IN ALL ( OPEXMap[CTDesc] )" asks: does this row's Account Desc appear
+//    ANYWHERE in the OPEXMap[CTDesc] column? ALL() is used rather than
+//    VALUES() so the test ignores filter context and any relationship that
+//    may exist between TBData and OPEXMap. No relationship is required.
+//
+//    Equivalent if you prefer it spelled out:
+//        VAR _IsOpex = CONTAINS ( OPEXMap, OPEXMap[CTDesc], TBData[Account Desc] )
 
-OpexGroups =
-DATATABLE (
-    "Primary Group", STRING,
-    {
-        { "BI/Product" }, { "Commercial Sales" }, { "Construction" },
-        { "Consumer Sales" }, { "Corporate Marketing" },
-        { "Direct Field Operations" }, { "Direct Legal & Regulatory" },
-        { "G&A" }, { "Bonus" }, { "Headquarters Expenses" },
-        { "Logistics" }, { "Technology" }
-    }
-)
 
-// then the test becomes:
-//     VAR _IsOpex = TBData[Primary Group] IN ALL ( OpexGroups[Primary Group] )
+// -- TYPE NOTES (both of these fail QUIETLY -- check them before trusting the
+//    output):
+//
+//    Segment: "< 116" assumes a NUMBER. If Segment is stored as Text, DAX
+//    either errors or compares alphabetically ("99" > "116" as text), so the
+//    COGS gate misfires. Column tools -> Data type. If it is text, convert:
+//        VALUE ( TBData[Segment] ) < 116
+//    and make sure no blanks or non-numeric values exist first, or VALUE
+//    throws.
+//
+//    Account Desc vs CTDesc: these must match EXACTLY -- same trailing
+//    spaces, same casing conventions. Trim both columns in Power Query before
+//    relying on this. A single trailing space silently drops a row out of
+//    OPEX and into gate 4.
+//
+//    Is the boundary right? "< 116" excludes 116 itself. If Segment 116
+//    should count as COGS, use "<= 116".
 
-// Debug tip: text must match EXACTLY, including the "/" in BI/Product and the
-// "&" in G&A and Direct Legal & Regulatory. Trailing spaces in the source data
-// are the usual culprit when a department silently fails the test -- run
-// Trim on the Primary Group column in Power Query before trusting this.
-// To find misses, make a temporary column:
-//     Debug Opex = TBData[Primary Group] IN { ... }
-// and check that every department you expect comes back TRUE.
+
+// -- DIAGNOSTIC: three throwaway columns that show each gate separately.
+//    Delete them once Level 1 checks out.
+//
+//    Debug LineItem = RELATED ( BellcorpMap[LineItem] )
+//    Debug Segment  = TBData[Segment] < 116
+//    Debug InOpex   = TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
+//
+//    Put these next to PL Level 1 in a table visual with [Amount]. Rows
+//    landing on "Unmapped" have a blank LineItem AND no OPEXMap match --
+//    that is the list to hand back to Finance.
 
 
 // ---------------------------------------------------------------------
@@ -137,6 +153,25 @@ DATATABLE (
 // and no relationship dependency at this level. (CCMap is still needed for
 // Level 3.) The Matrix 286 override is tested first, so a bonus row shows
 // "Bonus" in place of its department name.
+//
+// !! CHECK THIS AFTER THE LEVEL 1 REWRITE !!
+// Level 1 no longer decides OPEX from Primary Group -- it now decides it from
+// OPEXMap[CTDesc]. Level 2 still LABELS those rows with Primary Group. The two
+// columns are now independent, so a row can be OPEX by the OPEXMap rule while
+// carrying a Primary Group that is not one of the 12 departments -- and that
+// stray value becomes a Level 2 row header.
+//
+// Diagnostic: table visual of PL Level 1, TBData[Primary Group], [Amount],
+// filtered to PL Level 1 = "OPEX". Anything outside the 12 departments
+// (BI/Product, Commercial Sales, Construction, Consumer Sales, Corporate
+// Marketing, Direct Field Operations, Direct Legal & Regulatory, G&A, Bonus,
+// Headquarters Expenses, Logistics, Technology) is a row the two rules
+// disagree about. Decide then whether to fix the source or to fold the
+// strays into a catch-all:
+//     _Section = "OPEX",
+//         IF ( TBData[Matrix] = 286, "Bonus",
+//              IF ( TBData[Primary Group] IN { ...the 12... },
+//                   TBData[Primary Group], "Other OPEX" ) ),
 
 PL Level 2 =
 VAR _Section = TBData[PL Level 1]
