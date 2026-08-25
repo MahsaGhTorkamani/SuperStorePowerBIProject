@@ -15,6 +15,8 @@
 //                                                       is in RevMap[RevIndex]
 //              COGSMap[CTDesc Parent]  when Account Desc is in COGSMap[CTDesc]
 //              CCMap[CostCenter]       when Cc is in CCMap[CCCode]
+//   Level 4  = RevMap[FPA Mapping]     when InternalRevMap is in RevMap[SegMtx]
+//              OPEXMap[CTDesc Parent]  when Account Desc is in OPEXMap[CTDesc]
 //
 // NO RELATIONSHIPS REQUIRED:
 //   Every cross-table read uses LOOKUPVALUE with an explicit key, and every
@@ -312,22 +314,74 @@ RETURN
 
 
 // ---------------------------------------------------------------------
-// 4. LEVEL 4  -- the green detail column (OPTIONAL / NOT YET SPECIFIED)
-//    Sketch shows: FTR Internet / Vantage Internet / Residential / Business
-//                  for Revenue, and Salaries & Wages / Payroll Taxes for OPEX.
-//    Most likely this is the account description off the trial balance.
-//    Point it at whatever column actually holds that text.
+// 4. LEVEL 4  -- the green detail column
 // ---------------------------------------------------------------------
+// Two membership gates, first match wins:
+//
+//   1. InternalRevMap found in RevMap[SegMtx]   -> RevMap[FPA Mapping]
+//   2. Account Desc found in OPEXMap[CTDesc]    -> OPEXMap[CTDesc Parent]
+//   3. otherwise                                -> BLANK
+//
+// Gate 2 fires on exactly the rows Level 1 classified as OPEX -- it is the
+// same membership test, so the two stay consistent for free.
+
 PL Level 4 =
-VAR _Section = TBData[PL Level 1]
+VAR _Idx  = TBData[InternalRevMap]
+VAR _Desc = TBData[Account Desc]
+VAR _FPA =
+    LOOKUPVALUE (
+        RevMap[FPA Mapping],
+        RevMap[SegMtx], _Idx
+    )
+VAR _OpexParent =
+    LOOKUPVALUE (
+        OPEXMap[CTDesc Parent],
+        OPEXMap[CTDesc], _Desc
+    )
 RETURN
     SWITCH (
         TRUE (),
-        _Section = "Revenue", TBData[Account Description],   // *** CONFIRM ***
-        _Section = "COGS",    BLANK (),                      // sketch stops at L3
-        _Section = "OPEX",    TBData[Account Description],   // *** CONFIRM ***
+        _Idx  IN ALL ( RevMap[SegMtx] ),   _FPA,
+        _Desc IN ALL ( OPEXMap[CTDesc] ),  _OpexParent,
         BLANK ()
     )
+
+
+// -- WORTH CONFIRMING: SegMtx vs RevIndex
+//    Level 3 matches TBData[InternalRevMap] against RevMap[RevIndex].
+//    Level 4 matches the SAME TBData column against RevMap[SegMtx].
+//    Two different key columns in RevMap, one source column in TBData. That
+//    is plausible if RevMap carries two index columns at different grains,
+//    but it is also exactly what a typo looks like. Check RevMap in Data view:
+//    if SegMtx and RevIndex hold the same values, either column works and the
+//    distinction does not matter; if they differ, make sure Level 4 is meant
+//    to key off the coarser one.
+
+
+// -- DUPLICATE KEYS
+//    Both gates use LOOKUPVALUE, which ERRORS on duplicate keys rather than
+//    picking one. OPEXMap was membership-only until now -- from this column on
+//    it must ALSO be unique on CTDesc. Two more tables/keys to dedupe:
+//        RevMap   on SegMtx
+//        OPEXMap  on CTDesc
+//
+//    If a column will not evaluate because of duplicates and you want to see
+//    output before cleaning the source, swap either LOOKUPVALUE for the
+//    non-erroring form:
+//        VAR _FPA =
+//            MAXX (
+//                FILTER ( ALL ( RevMap ), RevMap[SegMtx] = _Idx ),
+//                RevMap[FPA Mapping]
+//            )
+//    MAXX collapses multiple matches instead of throwing. It HIDES the data
+//    problem -- if two rows disagree you silently get the alphabetically later
+//    value -- so treat it as a diagnostic, not a fix.
+
+
+// -- TYPE NOTE
+//    InternalRevMap and SegMtx must be the same data type. A whole number
+//    matched against text never matches and raises no error: gate 1 simply
+//    never fires and every revenue row falls through to gate 2 or to BLANK.
 
 
 // ---------------------------------------------------------------------

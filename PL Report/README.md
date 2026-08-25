@@ -13,7 +13,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 | **Level 1** (Revenue / COGS / OPEX) | `TBData[LineItem]` = `"Revenue"` | `TBData[LineItem]` = `"COGS"` **and** `TBData[Segment]` < 116 | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
 | **Level 2** (blue) | *driven by `TBData[Cc]` alone — same gates for all three sections (see below)* | | |
 | **Level 3** (red) | *driven by three membership gates — see below* | | |
-| **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
+| **Level 4** (green) | *driven by two membership gates — see below* | | |
 
 Level 1 runs **four gates in strict order** — first match wins:
 
@@ -67,6 +67,21 @@ Gate 1's result is wrapped in `TRIM()`: DAX treats a blank operand in `&` as an
 empty string, and `" Resi Data"` groups as a different matrix row from
 `"Resi Data"`.
 
+### Level 4 gates
+
+| # | Test | Result |
+|---|---|---|
+| 1 | `InternalRevMap` in `RevMap[SegMtx]` | `RevMap[FPA Mapping]` |
+| 2 | `Account Desc` in `OPEXMap[CTDesc]` | `OPEXMap[CTDesc Parent]` |
+| 3 | otherwise | blank |
+
+Gate 2 is the *same* membership test Level 1 uses to decide OPEX, so the two
+levels stay consistent for free.
+
+Note that gate 1 keys on `RevMap[SegMtx]` while Level 3 gate 1 keys on
+`RevMap[RevIndex]` — same `TBData` column, two different key columns in
+`RevMap`. See open question 1.
+
 ## Why calculated columns and not three separate visuals
 
 The three sections have to stack in **one** matrix, so all three need to
@@ -86,12 +101,13 @@ needing three visuals stitched together, which breaks subtotals and sorting.
    But `LOOKUPVALUE` **errors** on duplicate keys rather than picking one, so
    these four must be unique on their key before any column will evaluate:
 
-   | Table | Key |
-   |---|---|
-   | `RevMap` | `RevIndex` |
-   | `COGSMap` | `CTDesc` |
-   | `CCMap` | `CCCode` |
-   | `OPEXMap` | `CTDesc` (membership only — duplicates are harmless here) |
+   | Table | Key | Used by |
+   |---|---|---|
+   | `RevMap` | `RevIndex` | Level 3 |
+   | `RevMap` | `SegMtx` | Level 4 |
+   | `COGSMap` | `CTDesc` | Level 3 |
+   | `CCMap` | `CCCode` | Levels 2, 3 |
+   | `OPEXMap` | `CTDesc` | Level 1 (membership), Level 4 (lookup) |
 
    In Power Query: Trim the key column → Group By it filtered to Count > 1 to
    see what's duplicated → Remove Duplicates.
@@ -152,12 +168,12 @@ already reports.
 
 ## Open questions
 
-1. **Level 4 (green column)** — you specified sources for the first three
-   columns only. The sketch shows `FTR Internet` / `Vantage Internet` /
-   `Residential` / `Business` under Revenue and `Salaries & Wages` /
-   `Payroll Taxes` under OPEX. My guess is the account description off
-   `TBData`; the column is stubbed with `TBData[Account Description]` and
-   marked `*** CONFIRM ***`.
+1. **`SegMtx` vs `RevIndex`** — Level 3 matches `TBData[InternalRevMap]`
+   against `RevMap[RevIndex]`; Level 4 matches the same `TBData` column
+   against `RevMap[SegMtx]`. Plausible if `RevMap` carries two index columns
+   at different grains — but also exactly what a typo looks like. Check
+   `RevMap` in Data view: if the two columns hold the same values it doesn't
+   matter; if they differ, confirm Level 4 is meant to key off that one.
 2. ~~`COGSMap` join key~~ — **resolved**: joins `TBData[Account Desc]` to
    `COGSMap[CTDesc]`.
 3. ~~`TBData` → `BellPLMap` join key~~ — **resolved**: `LineItem` is read
