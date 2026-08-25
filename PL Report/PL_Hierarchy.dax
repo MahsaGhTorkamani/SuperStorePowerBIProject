@@ -16,6 +16,7 @@
 //                                                       is in RevMap[RevIndex]
 //              COGSMap[CTDesc Parent]  when Account Desc is in COGSMap[CTDesc]
 //              CCMap[CostCenter]       when Cc is in CCMap[CCCode]
+//              ...preceded by OPEXMap[CTDesc Parent] for the three G&A parents
 //   Level 4  = RevMap[FPA Mapping]     when InternalRevMap is in RevMap[SegMtx]
 //              OPEXMap[CTDesc Parent]  when Account Desc is in OPEXMap[CTDesc]
 //
@@ -270,18 +271,31 @@ RETURN
 // ---------------------------------------------------------------------
 // Three membership gates, first match wins:
 //
-//   1. InternalRevMap found in RevMap[RevIndex]
+//   1. OPEXMap[CTDesc Parent] is one of the three G&A parents
+//         -> that CTDesc Parent
+//   2. InternalRevMap found in RevMap[RevIndex]
 //         -> TBData[LineItem] & " " & RevMap[PLSect_cleaned]
-//   2. Account Desc found in COGSMap[CTDesc]
+//   3. Account Desc found in COGSMap[CTDesc]
 //         -> COGSMap[CTDesc Parent]
-//   3. Cc found in CCMap[CCCode]
+//   4. Cc found in CCMap[CCCode]
 //         -> CCMap[CostCenter]
-//   4. otherwise -> BLANK
+//   5. otherwise -> BLANK
 //
 // Like Level 2, this does not branch on PL Level 1. Each gate is a membership
 // test against a different map table, so the row's own keys decide the label.
 
 PL Level 3 =
+VAR _OpexParent =
+    LOOKUPVALUE (
+        OPEXMap[CTDesc Parent],
+        OPEXMap[CTDesc], TBData[Account Desc]
+    )
+VAR _IsGA =
+    _OpexParent IN {
+        "Bad Debt & Collection",
+        "Telecommunications",
+        "Taxes & Regulatory Fees"
+    }
 VAR _RevSect =
     LOOKUPVALUE (
         RevMap[PLSect_cleaned],
@@ -300,21 +314,40 @@ VAR _CostCenter =
 RETURN
     SWITCH (
         TRUE (),
-        // 1. revenue -- LineItem prefixed onto the cleaned P&L section
+        // 1. the G&A roll-up broken back out by its parent
+        _IsGA, _OpexParent,
+        // 2. revenue -- LineItem prefixed onto the cleaned P&L section
         TBData[InternalRevMap] IN ALL ( RevMap[RevIndex] ),
             TRIM ( TBData[LineItem] & " " & _RevSect ),
-        // 2. COGS -- parent description
+        // 3. COGS -- parent description
         TBData[Account Desc] IN ALL ( COGSMap[CTDesc] ),
             _CogsParent,
-        // 3. OPEX -- cost centre
+        // 4. OPEX -- cost centre
         TBData[Cc] IN ALL ( CCMap[CCCode] ),
             _CostCenter,
-        // 4. nothing matched
+        // 5. nothing matched
         BLANK ()
     )
 
 
-// -- WHY TRIM ON GATE 1
+// -- WHY THE G&A GATE IS FIRST
+//    It guarantees the pairing: every row Level 2 labels "G&A" gets its
+//    CTDesc Parent here, with no exceptions. Placed lower, a G&A row that also
+//    appears in COGSMap or RevMap would be claimed by one of those gates and
+//    Level 3 would contradict Level 2 for that row. Being first costs nothing
+//    -- the gate only fires when OPEXMap returns one of the three exact
+//    strings, which no revenue or COGS row can do.
+//
+//    So under the "G&A" row in the matrix, Level 3 shows the three parents
+//    (Bad Debt & Collection, Telecommunications, Taxes & Regulatory Fees) as
+//    its children -- the roll-up broken back out.
+//
+//    MAINTENANCE: the three strings now appear in BOTH PL Level 2 and
+//    PL Level 3. If the list ever changes, edit both -- or move it to a small
+//    one-column reference table and test with IN ALL ( GAParents[Parent] ).
+
+
+// -- WHY TRIM ON GATE 2
 //    "A & " " & B" in DAX treats a BLANK operand as an empty string, so a
 //    blank LineItem or a blank PLSect_cleaned would leave a stray leading or
 //    trailing space -- and " Resi Data" sorts and groups as a DIFFERENT value

@@ -66,12 +66,24 @@ Also section-independent — three membership tests, first match wins:
 
 | # | Test | Result |
 |---|---|---|
-| 1 | `InternalRevMap` in `RevMap[RevIndex]` | `LineItem` & `" "` & `RevMap[PLSect_cleaned]` |
-| 2 | `Account Desc` in `COGSMap[CTDesc]` | `COGSMap[CTDesc Parent]` |
-| 3 | `Cc` in `CCMap[CCCode]` | `CCMap[CostCenter]` |
-| 4 | otherwise | blank |
+| 1 | `OPEXMap[CTDesc Parent]` is one of the three G&A parents | that `CTDesc Parent` |
+| 2 | `InternalRevMap` in `RevMap[RevIndex]` | `LineItem` & `" "` & `RevMap[PLSect_cleaned]` |
+| 3 | `Account Desc` in `COGSMap[CTDesc]` | `COGSMap[CTDesc Parent]` |
+| 4 | `Cc` in `CCMap[CCCode]` | `CCMap[CostCenter]` |
+| 5 | otherwise | blank |
 
-Gate 1's result is wrapped in `TRIM()`: DAX treats a blank operand in `&` as an
+**Gate 1 is deliberately first.** It guarantees the pairing with Level 2: every
+row labelled `G&A` there gets its `CTDesc Parent` here, with no exceptions.
+Placed lower, a G&A row that also appeared in `COGSMap` or `RevMap` would be
+claimed by one of those gates and Level 3 would contradict Level 2 for that
+row. Being first is free — the gate only fires when `OPEXMap` returns one of
+the three exact strings, which no revenue or COGS row can do.
+
+So in the matrix, the `G&A` row at Level 2 expands into its three parents —
+`Bad Debt & Collection`, `Telecommunications`, `Taxes & Regulatory Fees` — the
+roll-up broken back out.
+
+Gate 2's result is wrapped in `TRIM()`: DAX treats a blank operand in `&` as an
 empty string, and `" Resi Data"` groups as a different matrix row from
 `"Resi Data"`.
 
@@ -115,7 +127,7 @@ needing three visuals stitched together, which breaks subtotals and sorting.
    | `RevMap` | `SegMtx` | Level 4 |
    | `COGSMap` | `CTDesc` | Level 3 |
    | `CCMap` | `CCCode` | Levels 2, 3 |
-   | `OPEXMap` | `CTDesc` | Level 1 (membership), Level 4 (lookup) |
+   | `OPEXMap` | `CTDesc` | Level 1 (membership), Levels 2, 3, 4 (lookup) |
 
    In Power Query: Trim the key column → Group By it filtered to Count > 1 to
    see what's duplicated → Remove Duplicates.
@@ -236,6 +248,10 @@ already reports.
     `Taxes & Regulatory Fees` must match `OPEXMap[CTDesc Parent]` character
     for character, ampersands included. Trim the column, then eyeball a
     distinct-values list to confirm the three appear as written.
+14e. **The list is now in two places** — `PL Level 2` (to label the row `G&A`)
+    and `PL Level 3` (to break it back out). If it ever changes, edit both, or
+    move it to a one-column reference table and test with
+    `IN ALL ( GAParents[Parent] )`.
 15. **Gate 5 returns blank** — as specified. A blank Level 2 renders as an
     empty row header, making those amounts easy to miss in reconciliation.
     `"Unmapped Cc " & _Cc` would surface them instead, matching how Level 1
