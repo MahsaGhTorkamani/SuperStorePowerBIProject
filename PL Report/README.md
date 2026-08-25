@@ -12,7 +12,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 |---|---|---|---|
 | **Level 1** (Revenue / COGS / OPEX) | `TBData[LineItem]` = `"Revenue"` | `TBData[LineItem]` = `"COGS"` **and** `TBData[Segment]` < 116 | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
 | **Level 2** (blue) | *driven by `TBData[Cc]` alone — same gates for all three sections (see below)* | | |
-| **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
+| **Level 3** (red) | *driven by three membership gates — see below* | | |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
 
 Level 1 runs **four gates in strict order** — first match wins:
@@ -52,6 +52,21 @@ The fixed list covers `Cc` 1, 2, 11, 21, 22, 24, 25, 27, 31, 32, 78, 79, 97,
 106, 116. Codes 22 and 24 carry no description, so their label is just the
 padded number.
 
+### Level 3 gates
+
+Also section-independent — three membership tests, first match wins:
+
+| # | Test | Result |
+|---|---|---|
+| 1 | `InternalRevMap` in `RevMap[RevIndex]` | `LineItem` & `" "` & `RevMap[PLSect_cleaned]` |
+| 2 | `Account Desc` in `COGSMap[CTDesc]` | `COGSMap[CTDesc Parent]` |
+| 3 | `Cc` in `CCMap[CCCode]` | `CCMap[CostCenter]` |
+| 4 | otherwise | blank |
+
+Gate 1's result is wrapped in `TRIM()`: DAX treats a blank operand in `&` as an
+empty string, and `" Resi Data"` groups as a different matrix row from
+`"Resi Data"`.
+
 ## Why calculated columns and not three separate visuals
 
 The three sections have to stack in **one** matrix, so all three need to
@@ -63,18 +78,26 @@ needing three visuals stitched together, which breaks subtotals and sorting.
 
 ## Build steps
 
-1. **Create the relationships** — only Level 3 needs any:
-   - `TBData[Cc]` → `CCMap[Cost Center]` (many-to-one, single direction)
-   - `TBData[Cc]` → `COGSMap[Cc]` (many-to-one, single direction)
+1. **Dedupe the map tables** — no relationships are needed at all. Every
+   cross-table read uses `LOOKUPVALUE` with an explicit key and every
+   membership test uses `IN ALL()`, so nothing depends on a relationship
+   existing or on which way its arrow points.
 
-   Power BI allows only one active relationship per table pair, and `TBData`
-   hits `CCMap` and `COGSMap` on the same `Cc` column — that's fine, they're
-   different table pairs. `OPEXMap` needs no relationship (the membership
-   test uses `ALL()`), and neither do `BellPLMap` / `BellcorpMap`, which this
-   report no longer reads at all.
+   But `LOOKUPVALUE` **errors** on duplicate keys rather than picking one, so
+   these four must be unique on their key before any column will evaluate:
 
-   The DAX ships with `LOOKUPVALUE` so Level 3 runs even with zero
-   relationships; swap to `RELATED()` once they exist.
+   | Table | Key |
+   |---|---|
+   | `RevMap` | `RevIndex` |
+   | `COGSMap` | `CTDesc` |
+   | `CCMap` | `CCCode` |
+   | `OPEXMap` | `CTDesc` (membership only — duplicates are harmless here) |
+
+   In Power Query: Trim the key column → Group By it filtered to Count > 1 to
+   see what's duplicated → Remove Duplicates.
+
+   Add many-to-one relationships and swap `LOOKUPVALUE` for `RELATED()` only
+   if you want the speed on a large trial balance.
 
 2. **Add the calculated columns** to `TBData`, in this order (each one
    references the previous): `PL Level 1`, `PL Level 2`, `PL Level 3`,
@@ -135,14 +158,12 @@ already reports.
    `Payroll Taxes` under OPEX. My guess is the account description off
    `TBData`; the column is stubbed with `TBData[Account Description]` and
    marked `*** CONFIRM ***`.
-2. **`COGSMap` join key** — I assumed it joins on cost center (`Cc`). If it
-   joins on account or on `CTDesc`, change the `LOOKUPVALUE` arguments in
-   `PL Level 3`.
+2. ~~`COGSMap` join key~~ — **resolved**: joins `TBData[Account Desc]` to
+   `COGSMap[CTDesc]`.
 3. ~~`TBData` → `BellPLMap` join key~~ — **resolved**: `LineItem` is read
    straight off `TBData`, so the bridge is no longer used by this report.
-4. **`CCMap[Cost Center]`** — is this the key itself, or a descriptive label?
-   If it's identical to `TBData[Cc]` the lookup is redundant and you should
-   use `TBData[Cc]` directly.
+4. ~~`CCMap[Cost Center]`~~ — **resolved**: `CCCode` is the key,
+   `CostCenter` is the label fetched at Level 3.
 5. **Sign convention** — the DAX assumes costs are stored positive. If your
    TB carries them as negatives, every subtraction becomes an addition:
    `Adjusted EBITDA := [Total Revenue] + [Total COGS] + [Total OPEX]`.
@@ -195,9 +216,18 @@ already reports.
     whether 116 itself should be COGS (`<=` rather than `<`).
 19. **`Account Desc` ↔ `CTDesc` matching** — exact string equality. Trim both
     in Power Query first; one trailing space drops a row out of OPEX.
-20. **Column spelling** — written as `TBData[LineItem]`. If it is actually
-    `Line Item` with a space, adjust. DAX errors on this rather than failing
-    quietly, so you will know immediately.
+20. **Column spelling** — written as `TBData[LineItem]` and
+    `CCMap[CostCenter]` (no spaces), per your latest spec. DAX errors on a
+    wrong column name rather than failing quietly, so paste will tell you.
+21. **`Account Desc` does double duty** — Level 1 tests it against
+    `OPEXMap[CTDesc]` to decide OPEX; Level 3 tests it against
+    `COGSMap[CTDesc]` to fetch the COGS parent. If one `Account Desc` appears
+    in **both** map tables, the row is OPEX at Level 1 but carries a COGS
+    parent at Level 3 — a visible contradiction in the matrix. Check the
+    overlap is empty.
+22. **Key data types** — `InternalRevMap` ↔ `RevIndex` and `Cc` ↔ `CCCode`
+    must be the same type on both sides. A number matched against text never
+    matches and fails silently; the row just falls to the next gate.
 
 ## Note on this repo
 

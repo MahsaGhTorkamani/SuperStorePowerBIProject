@@ -11,18 +11,17 @@
 //   Level 2  = driven by TBData[Cc] alone: 991-995 revenue roll-ups,
 //              then Matrix 286 -> "Bonus", then CCMap[Primary Group],
 //              then the fixed "nnn-Description" code list
-//   Level 3  = TBData[PL Label]                     (Revenue)
-//              COGSMap[CTDesc Parent]               (COGS)
-//              CCMap[Cost Center]                   (OPEX)
+//   Level 3  = LineItem & " " & RevMap[PLSect_cleaned]  when InternalRevMap
+//                                                       is in RevMap[RevIndex]
+//              COGSMap[CTDesc Parent]  when Account Desc is in COGSMap[CTDesc]
+//              CCMap[CostCenter]       when Cc is in CCMap[CCCode]
 //
-// NOTE ON LOOKUPVALUE vs RELATED:
-//   Level 1 needs no lookups at all -- its three inputs are columns on TBData.
-//   Level 3 still reaches into COGSMap and CCMap; those are written with
-//   LOOKUPVALUE so they work with NO relationships in place. If the
-//   many-to-one relationships exist, swap them for RELATED() -- materially
-//   faster on large trial balances.
-//
-// >>> Replace the *** KEY *** placeholders with your real join columns. <<<
+// NO RELATIONSHIPS REQUIRED:
+//   Every cross-table read uses LOOKUPVALUE with an explicit key, and every
+//   membership test uses IN ALL(). None of the three columns depends on a
+//   relationship existing, or on which way its arrow points. Add the
+//   many-to-one relationships and swap LOOKUPVALUE for RELATED() only if you
+//   want the speed on a large trial balance.
 // =====================================================================
 
 
@@ -222,40 +221,94 @@ RETURN
 
 // ---------------------------------------------------------------------
 // 3. LEVEL 3  -- the red column
-//    Revenue -> TBData[PL Label]
-//    COGS    -> COGSMap[CTDesc Parent]
-//    OPEX    -> CCMap[Cost Center]
 // ---------------------------------------------------------------------
+// Three membership gates, first match wins:
+//
+//   1. InternalRevMap found in RevMap[RevIndex]
+//         -> TBData[LineItem] & " " & RevMap[PLSect_cleaned]
+//   2. Account Desc found in COGSMap[CTDesc]
+//         -> COGSMap[CTDesc Parent]
+//   3. Cc found in CCMap[CCCode]
+//         -> CCMap[CostCenter]
+//   4. otherwise -> BLANK
+//
+// Like Level 2, this does not branch on PL Level 1. Each gate is a membership
+// test against a different map table, so the row's own keys decide the label.
+
 PL Level 3 =
-VAR _Section = TBData[PL Level 1]
+VAR _RevSect =
+    LOOKUPVALUE (
+        RevMap[PLSect_cleaned],
+        RevMap[RevIndex], TBData[InternalRevMap]
+    )
 VAR _CogsParent =
     LOOKUPVALUE (
         COGSMap[CTDesc Parent],
-        COGSMap[Cc],                    // *** KEY *** in COGSMap -- see note A
-        TBData[Cc]
+        COGSMap[CTDesc], TBData[Account Desc]
     )
 VAR _CostCenter =
     LOOKUPVALUE (
-        CCMap[Cost Center],
-        CCMap[CCCode],                  // key confirmed as CCCode
-        TBData[Cc]
+        CCMap[CostCenter],
+        CCMap[CCCode], TBData[Cc]
     )
 RETURN
     SWITCH (
         TRUE (),
-        _Section = "Revenue", TBData[PL Label],
-        _Section = "COGS",    _CogsParent,
-        _Section = "OPEX",    _CostCenter,
+        // 1. revenue -- LineItem prefixed onto the cleaned P&L section
+        TBData[InternalRevMap] IN ALL ( RevMap[RevIndex] ),
+            TRIM ( TBData[LineItem] & " " & _RevSect ),
+        // 2. COGS -- parent description
+        TBData[Account Desc] IN ALL ( COGSMap[CTDesc] ),
+            _CogsParent,
+        // 3. OPEX -- cost centre
+        TBData[Cc] IN ALL ( CCMap[CCCode] ),
+            _CostCenter,
+        // 4. nothing matched
         BLANK ()
     )
 
-// NOTE A: if COGSMap is keyed on the account (or on CTDesc) rather than on
-// the cost center, change the last two arguments accordingly, e.g.
-//     LOOKUPVALUE ( COGSMap[CTDesc Parent], COGSMap[Account], TBData[Account] )
+
+// -- WHY TRIM ON GATE 1
+//    "A & " " & B" in DAX treats a BLANK operand as an empty string, so a
+//    blank LineItem or a blank PLSect_cleaned would leave a stray leading or
+//    trailing space -- and " Resi Data" sorts and groups as a DIFFERENT value
+//    from "Resi Data" in the matrix. TRIM removes it. Note the gate only fires
+//    when InternalRevMap IS in RevIndex, so a blank PLSect_cleaned means the
+//    RevMap row exists but its label is empty -- worth chasing in the source
+//    rather than shipping a bare LineItem.
+
+
+// -- DUPLICATE KEYS: THREE TABLES TO CHECK
+//    Every gate uses LOOKUPVALUE, which ERRORS on duplicate keys rather than
+//    picking one ("A table of multiple values was supplied"). Dedupe all three
+//    before this column will evaluate:
+//        RevMap   on RevIndex
+//        COGSMap  on CTDesc
+//        CCMap    on CCCode
+//    In Power Query: Trim the key column, then Group By it filtered to
+//    Count > 1 to see what is duplicated, then Remove Duplicates.
+
+
+// -- NOTE: Account Desc is now doing double duty
+//    Level 1 tests it against OPEXMap[CTDesc] to decide OPEX.
+//    Level 3 tests it against COGSMap[CTDesc] to fetch the COGS parent.
+//    Two different tables, both with a column called CTDesc. If a single
+//    Account Desc appears in BOTH map tables, that row is classified OPEX at
+//    Level 1 while Level 3 labels it with a COGS parent -- a visible
+//    contradiction in the matrix. Worth checking once:
+//        table visual of TBData[Account Desc] filtered to values present in
+//        both OPEXMap[CTDesc] and COGSMap[CTDesc]; the overlap should be empty.
+
+
+// -- TYPE NOTES
+//    InternalRevMap vs RevIndex, and Cc vs CCCode, must be the SAME data type
+//    on both sides. A whole number matched against text never matches, and
+//    fails silently -- the row just falls to the next gate. Column tools ->
+//    Data type on each of the four columns.
 //
-// NOTE B: if CCMap[Cost Center] IS the key column (identical to TBData[Cc]),
-// the lookup is redundant -- just use TBData[Cc] for the OPEX branch. Use the
-// lookup only when CCMap[Cost Center] is a *descriptive* label.
+//    Column naming: written as CCMap[CostCenter] (no space), per your latest
+//    spec. Earlier it appeared as "Cost Center". DAX errors on a wrong column
+//    name rather than failing quietly, so paste will tell you.
 
 
 // ---------------------------------------------------------------------
