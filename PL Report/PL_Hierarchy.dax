@@ -8,7 +8,7 @@
 //              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
 //              else LineItem, or "Unmapped" when that is blank
-//   Level 2  = driven by TBData[Cc] alone: 991-995 revenue roll-ups,
+//   Level 2  = driven by TBData[CC] alone: 991-995 revenue roll-ups,
 //              then Matrix 286 -> "Bonus", then three OPEXMap CTDesc Parents
 //              -> "G&A", then CCMap[Primary Group], then the fixed
 //              "nnn-Description" code list
@@ -122,7 +122,7 @@ RETURN
 // ---------------------------------------------------------------------
 // 2. LEVEL 2  -- the blue column
 // ---------------------------------------------------------------------
-// Driven entirely by TBData[Cc]. Four gates, first match wins:
+// Driven entirely by TBData[CC]. Four gates, first match wins:
 //
 //   1. Cc 991-995                -> the five revenue roll-up labels
 //   2. Matrix = 286              -> "Bonus"          (see BONUS note below)
@@ -132,11 +132,17 @@ RETURN
 //   5. Cc in the fixed code list -> "nnn-Description"
 //   6. otherwise                 -> BLANK            (see FALLBACK note)
 //
-// This no longer branches on PL Level 1 -- the Cc value alone decides the
+// This no longer branches on PL Level 1 -- the CC value alone decides the
 // label, so Revenue / COGS / OPEX rows all flow through the same gates.
+//
+// NOTE: SWITCH stops at the FIRST matching condition, so listing a condition
+// twice makes the second copy unreachable. Each gate below appears exactly
+// once -- if you paste a duplicated "_InCCMap, _CCGroup," line back in, it is
+// dead code: harmless, never evaluated, but worth deleting so the gate list
+// stays readable.
 
 PL Level 2 =
-VAR _Cc = TBData[Cc]
+VAR _Cc = TBData[CC]
 VAR _InCCMap = _Cc IN ALL ( CCMap[CCCode] )
 VAR _OpexParent =
     LOOKUPVALUE (
@@ -309,7 +315,7 @@ VAR _CogsParent =
 VAR _CostCenter =
     LOOKUPVALUE (
         CCMap[CostCenter],
-        CCMap[CCCode], TBData[Cc]
+        CCMap[CCCode], TBData[CC]
     )
 RETURN
     SWITCH (
@@ -323,7 +329,7 @@ RETURN
         TBData[Account Desc] IN ALL ( COGSMap[CTDesc] ),
             _CogsParent,
         // 4. OPEX -- cost centre
-        TBData[Cc] IN ALL ( CCMap[CCCode] ),
+        TBData[CC] IN ALL ( CCMap[CCCode] ),
             _CostCenter,
         // 5. nothing matched
         BLANK ()
