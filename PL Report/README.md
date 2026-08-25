@@ -19,10 +19,20 @@ Level 1 runs **four gates in strict order** — first match wins:
 
 | # | Test | Result |
 |---|---|---|
-| 1 | `TBData[LineItem]` = `"Revenue"` | `Revenue` |
-| 2 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
-| 3 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
-| 4 | otherwise | `LineItem`, or `Unmapped` if that is blank |
+| 1 | `OPEXMap[CTDesc Parent]` is a G&A parent | `OPEX` |
+| 2 | `TBData[LineItem]` = `"Revenue"` | `Revenue` |
+| 3 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
+| 4 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
+| 5 | otherwise | `LineItem`, or `Unmapped` if that is blank |
+
+Gate 1 is **not** redundant with gate 4. Gate 4 only sees rows that got past
+Revenue and COGS — so a G&A-parent row carrying `LineItem` = `"Revenue"`, or
+`"COGS"` with `Segment` < 116, would stop earlier and never reach it. Level 1
+would then call it Revenue or COGS while Level 2 labels it `G&A`. Gate 1 makes
+all three levels agree.
+
+It returns **`OPEX`, not `G&A`** — G&A is a department inside OPEX and belongs
+at Level 2. See open question 23 if you want it as its own top-level line.
 
 Gate 2 is a *release valve*, not a filter: a COGS row with `Segment` ≥ 116
 falls through to gate 3 where it can be reclassified as OPEX. If it isn't in
@@ -248,10 +258,18 @@ already reports.
     `Taxes & Regulatory Fees` must match `OPEXMap[CTDesc Parent]` character
     for character, ampersands included. Trim the column, then eyeball a
     distinct-values list to confirm the three appear as written.
-14e. **The list is now in two places** — `PL Level 2` (to label the row `G&A`)
-    and `PL Level 3` (to break it back out). If it ever changes, edit both, or
-    move it to a one-column reference table and test with
-    `IN ALL ( GAParents[Parent] )`.
+14e. **The list is now in three places** — `PL Level 1` (force to OPEX),
+    `PL Level 2` (label the row `G&A`) and `PL Level 3` (break it back out).
+    Three copies of one list is fragile: add a fourth parent, miss one column,
+    and the levels disagree with no error raised. **Recommended**: move it to
+    the disconnected `GAParents` table in the `.dax` file and use
+    `IN ALL ( GAParents[Parent] )` in all three.
+23. **Should G&A be its own Level 1 line?** — as built it returns `OPEX`,
+    keeping G&A a department within OPEX. If Finance reports it as a separate
+    top-level section, change the gate to return `"G&A"` **and** widen the
+    measure to `CALCULATE ( [Amount], TBData[PL Level 1] IN { "OPEX", "G&A" } )`
+    — otherwise those amounts drop out of `Total OPEX` and `Adjusted EBITDA`
+    silently, with no error.
 15. **Gate 5 returns blank** — as specified. A blank Level 2 renders as an
     empty row header, making those amounts easy to miss in reconciliation.
     `"Unmapped Cc " & _Cc` would surface them instead, matching how Level 1

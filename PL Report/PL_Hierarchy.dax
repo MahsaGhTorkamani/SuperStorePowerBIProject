@@ -4,7 +4,8 @@
 // Builds the 3 visible columns of the P&L matrix. Each level pulls from a
 // different source table depending on which Level 1 section the row is in.
 //
-//   Level 1  = "Revenue"  if TBData[LineItem] = "Revenue"
+//   Level 1  = "OPEX"     if OPEXMap[CTDesc Parent] is a G&A parent
+//              "Revenue"  if TBData[LineItem] = "Revenue"
 //              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
 //              else LineItem, or "Unmapped" when that is blank
@@ -34,10 +35,11 @@
 // ---------------------------------------------------------------------
 // Four gates, tested strictly in this order. The first one that matches wins:
 //
-//   1. LineItem = "Revenue"                        -> "Revenue"
-//   2. LineItem = "COGS" AND Segment < 116         -> "COGS"
-//   3. Account Desc found in OPEXMap[CTDesc]       -> "OPEX"
-//   4. otherwise                                   -> LineItem
+//   1. OPEXMap[CTDesc Parent] is a G&A parent      -> "OPEX"
+//   2. LineItem = "Revenue"                        -> "Revenue"
+//   3. LineItem = "COGS" AND Segment < 116         -> "COGS"
+//   4. Account Desc found in OPEXMap[CTDesc]       -> "OPEX"
+//   5. otherwise                                   -> LineItem
 //      ...and if LineItem is blank                 -> "Unmapped"
 //
 // Note what gate 2 does: a COGS row with Segment >= 116 does NOT stop there.
@@ -56,16 +58,73 @@
 
 PL Level 1 =
 VAR _LineItem = TBData[LineItem]
+VAR _OpexParent =
+    LOOKUPVALUE (
+        OPEXMap[CTDesc Parent],
+        OPEXMap[CTDesc], TBData[Account Desc]
+    )
+VAR _IsGA =
+    _OpexParent IN {
+        "Bad Debt & Collection",
+        "Telecommunications",
+        "Taxes & Regulatory Fees"
+    }
 VAR _IsOpex =
     TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
 RETURN
     SWITCH (
         TRUE (),
+        _IsGA,                                        "OPEX",
         _LineItem = "Revenue",                        "Revenue",
         _LineItem = "COGS" && TBData[Segment] < 116,  "COGS",
         _IsOpex,                                      "OPEX",
         COALESCE ( _LineItem, "Unmapped" )
     )
+
+
+// -- WHAT THE G&A GATE ACTUALLY CHANGES
+//    It is NOT redundant with gate 4. Gate 4 only sees rows that got past the
+//    Revenue and COGS gates. A G&A-parent row whose LineItem is "Revenue", or
+//    whose LineItem is "COGS" with Segment < 116, would stop at gate 2 or 3
+//    and never reach gate 4 -- so Level 1 would call it Revenue or COGS while
+//    Level 2 labels it "G&A" and Level 3 shows its CTDesc Parent. Putting the
+//    G&A test first makes all three levels agree for those rows.
+//
+//    If nothing changes when you add it, that simply means no G&A-parent row
+//    carries a Revenue or low-Segment COGS LineItem -- the gate is then cheap
+//    insurance against that appearing later.
+//
+//    IT RETURNS "OPEX", NOT "G&A". G&A is a department inside OPEX; it belongs
+//    at Level 2, which is where it is. Returning "G&A" here would make it a
+//    FOURTH Level 1 section, and [Total OPEX] filters on
+//    PL Level 1 = "OPEX", so those amounts would drop out of Total OPEX and
+//    out of Adjusted EBITDA -- silently, with no error. If you do want G&A as
+//    its own top-level line, change the gate to return "G&A" AND widen the
+//    measure:
+//        Total OPEX :=
+//        CALCULATE ( [Amount], TBData[PL Level 1] IN { "OPEX", "G&A" } )
+
+
+// -- THE THREE G&A PARENTS NOW APPEAR IN THREE COLUMNS
+//    PL Level 1 (force to OPEX), PL Level 2 (label the row "G&A") and
+//    PL Level 3 (break it back out). Three copies of one list is fragile: add
+//    a fourth parent and miss one column, and the levels disagree with no
+//    error raised. Recommended now that it is in three places -- put the list
+//    in one disconnected table:
+
+GAParents =
+DATATABLE (
+    "Parent", STRING,
+    {
+        { "Bad Debt & Collection" },
+        { "Telecommunications" },
+        { "Taxes & Regulatory Fees" }
+    }
+)
+
+//    ...then every column uses the same one-liner in place of its inline list:
+//        VAR _IsGA = _OpexParent IN ALL ( GAParents[Parent] )
+//    Leave GAParents DISCONNECTED -- no relationship to anything.
 
 
 // -- THE OPEX MEMBERSHIP TEST
