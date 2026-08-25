@@ -10,20 +10,16 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
-| **Level 1** (Revenue / COGS / OPEX) | `LineItem` = `"Revenue"` * | `LineItem` = `"COGS"` **and** `TBData[Segment]` < 116 * | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
+| **Level 1** (Revenue / COGS / OPEX) | `TBData[LineItem]` = `"Revenue"` | `TBData[LineItem]` = `"COGS"` **and** `TBData[Segment]` < 116 | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
 | **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `TBData[Primary Group]` |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
-
-\* `BellcorpMap` is not joined directly to `TBData` — it is reached through a
-bridge table: `TBData` → `BellPLMap` → `BellcorpMap`, the second hop joining
-on `Row`.
 
 Level 1 runs **four gates in strict order** — first match wins:
 
 | # | Test | Result |
 |---|---|---|
-| 1 | `LineItem` = `"Revenue"` | `Revenue` |
+| 1 | `TBData[LineItem]` = `"Revenue"` | `Revenue` |
 | 2 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
 | 3 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
 | 4 | otherwise | `LineItem`, or `Unmapped` if that is blank |
@@ -32,6 +28,10 @@ Gate 2 is a *release valve*, not a filter: a COGS row with `Segment` ≥ 116
 falls through to gate 3 where it can be reclassified as OPEX. If it isn't in
 `OPEXMap` either, gate 4 returns `COGS` anyway — its own `LineItem`. No row is
 lost by failing the Segment test.
+
+All three inputs — `LineItem`, `Segment`, `Account Desc` — are columns on
+`TBData`, and the OPEX test uses `ALL()`, so **Level 1 needs no relationships
+at all**.
 
 The `Primary Group` department list no longer classifies Level 1. It is still
 used to *label* OPEX rows at Level 2 — see open question 14.
@@ -47,22 +47,18 @@ needing three visuals stitched together, which breaks subtotals and sorting.
 
 ## Build steps
 
-1. **Create the relationships**:
-   - `TBData` → `BellPLMap` (many-to-one, single direction)
-   - `BellPLMap` → `BellcorpMap` on `Row` (many-to-one, single direction)
+1. **Create the relationships** — only Level 3 needs any:
    - `TBData[Cc]` → `CCMap[Cost Center]` (many-to-one, single direction)
    - `TBData[Cc]` → `COGSMap[Cc]` (many-to-one, single direction)
 
-   The `BellcorpMap` chain matters most. `RELATED()` walks any number of
-   many-to-one hops, so with both arrows pointing **away from** `TBData`,
-   Level 1 is a single `RELATED ( BellcorpMap[LineItem] )`. If instead
-   `BellPLMap` is the *one* side of both relationships, the path is
-   many→one then one→many and `RELATED()` cannot cross it — use the nested
-   `LOOKUPVALUE` fallback in the `.dax` file.
-
    Power BI allows only one active relationship per table pair, and `TBData`
    hits `CCMap` and `COGSMap` on the same `Cc` column — that's fine, they're
-   different table pairs.
+   different table pairs. `OPEXMap` needs no relationship (the membership
+   test uses `ALL()`), and neither do `BellPLMap` / `BellcorpMap`, which this
+   report no longer reads at all.
+
+   The DAX ships with `LOOKUPVALUE` so Level 3 runs even with zero
+   relationships; swap to `RELATED()` once they exist.
 
 2. **Add the calculated columns** to `TBData`, in this order (each one
    references the previous): `PL Level 1`, `PL Level 2`, `PL Level 3`,
@@ -107,9 +103,9 @@ see exactly `Revenue`, `COGS`, `OPEX` and nothing else. Any rows landing under
 **"Unmapped"** are trial-balance accounts that are neither an OPEX department
 nor resolvable through `BellcorpMap` — chase those before trusting the totals.
 
-Then check each gate separately with three throwaway columns (they're in the
-`.dax` file): `Debug LineItem`, `Debug Segment`, `Debug InOpex`. Put them
-beside `PL Level 1` in a table with `[Amount]`. A row on `Unmapped` has both a
+Then check each gate separately with two throwaway columns (they're in the
+`.dax` file): `Debug Segment` and `Debug InOpex`. Put them beside
+`TBData[LineItem]` and `PL Level 1` in a table with `[Amount]`. A row on `Unmapped` has both a
 blank `LineItem` **and** no `OPEXMap` match — that's the list for Finance.
 
 Finally check that `[Adjusted EBITDA]` reconciles to the figure Finance
@@ -126,8 +122,8 @@ already reports.
 2. **`COGSMap` join key** — I assumed it joins on cost center (`Cc`). If it
    joins on account or on `CTDesc`, change the `LOOKUPVALUE` arguments in
    `PL Level 3`.
-3. **`TBData` → `BellPLMap` join key** — the bridge hop. I assumed an account
-   code on both sides; confirm the actual column.
+3. ~~`TBData` → `BellPLMap` join key~~ — **resolved**: `LineItem` is read
+   straight off `TBData`, so the bridge is no longer used by this report.
 4. **`CCMap[Cost Center]`** — is this the key itself, or a descriptive label?
    If it's identical to `TBData[Cc]` the lookup is redundant and you should
    use `TBData[Cc]` directly.
@@ -174,9 +170,12 @@ already reports.
     whether 116 itself should be COGS (`<=` rather than `<`).
 16. **`Account Desc` ↔ `CTDesc` matching** — exact string equality. Trim both
     in Power Query first; one trailing space drops a row out of OPEX.
+17. **Column spelling** — written as `TBData[LineItem]`. If it is actually
+    `Line Item` with a space, adjust. DAX errors on this rather than failing
+    quietly, so you will know immediately.
 
 ## Note on this repo
 
 The `.pbix` in this repo is the Superstore retail model — it contains none of
-`TBData`, `BellPLMap`, `BellcorpMap`, `CCMap`, or `COGSMap`. This guide targets a separate
+`TBData`, `CCMap`, `COGSMap`, or `OPEXMap`. This guide targets a separate
 model, so nothing here modifies the existing report.

@@ -4,11 +4,10 @@
 // Builds the 3 visible columns of the P&L matrix. Each level pulls from a
 // different source table depending on which Level 1 section the row is in.
 //
-//   Level 1  = "Revenue"  if BellcorpMap[LineItem] = "Revenue"
+//   Level 1  = "Revenue"  if TBData[LineItem] = "Revenue"
 //              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
 //              else LineItem, or "Unmapped" when that is blank
-//              (LineItem via TBData -> BellPLMap -> BellcorpMap on "Row")
 //   Level 2  = TBData[Revenue Row Label]            (Revenue)
 //              TBData[Cc]                           (COGS)
 //              "Bonus" if TBData[Matrix] = 286,     (OPEX)
@@ -18,11 +17,11 @@
 //              CCMap[Cost Center]                   (OPEX)
 //
 // NOTE ON LOOKUPVALUE vs RELATED:
-//   Every lookup below is written with LOOKUPVALUE so it works with NO
-//   relationships in place. If you already have (or create) a many-to-one
-//   relationship from TBData to the map table, swap it for RELATED() --
-//   it is materially faster on large trial balances. Both variants are
-//   shown for Level 1; the rest follow the same pattern.
+//   Level 1 needs no lookups at all -- its three inputs are columns on TBData.
+//   Level 3 still reaches into COGSMap and CCMap; those are written with
+//   LOOKUPVALUE so they work with NO relationships in place. If the
+//   many-to-one relationships exist, swap them for RELATED() -- materially
+//   faster on large trial balances.
 //
 // >>> Replace the *** KEY *** placeholders with your real join columns. <<<
 // =====================================================================
@@ -45,13 +44,8 @@
 // So the Segment test is a gate that lets high-segment COGS rows escape into
 // OPEX -- it never loses a row.
 //
-// LineItem comes from BellcorpMap, two hops away through a bridge table:
-//
-//     TBData --many-to-one--> BellPLMap --many-to-one--> BellcorpMap
-//                                        (joined on "Row")
-//
-// RELATED() follows a chain of many-to-one relationships across any number
-// of hops, so with both arrows pointing away from TBData it is a one-liner.
+// LineItem, Segment and Account Desc are all columns ON TBData, and the OPEX
+// test uses ALL(), so this column needs NO relationships at all.
 //
 // This column produces ONLY Revenue / COGS / OPEX (plus any other LineItem
 // value and "Unmapped"). Adjusted EBITDA, Gross Profit and Total Revenue
@@ -59,36 +53,7 @@
 // trial-balance rows. See the last section of this file.
 
 PL Level 1 =
-VAR _LineItem = RELATED ( BellcorpMap[LineItem] )
-VAR _IsOpex =
-    TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
-RETURN
-    SWITCH (
-        TRUE (),
-        _LineItem = "Revenue",                        "Revenue",
-        _LineItem = "COGS" && TBData[Segment] < 116,  "COGS",
-        _IsOpex,                                      "OPEX",
-        COALESCE ( _LineItem, "Unmapped" )
-    )
-
-
-// -- FALLBACK for the BellcorpMap hop: use this when no relationships exist,
-//    or when BellPLMap is the "one" side of BOTH relationships (the path from
-//    TBData is then many->one then one->many, which RELATED cannot walk).
-//    Only the _LineItem VAR changes; the four gates are identical.
-
-PL Level 1 =
-VAR _Row =
-    LOOKUPVALUE (
-        BellPLMap[Row],
-        BellPLMap[Account],             // *** KEY *** in BellPLMap
-        TBData[Account]                 // *** KEY *** in TBData
-    )
-VAR _LineItem =
-    LOOKUPVALUE (
-        BellcorpMap[LineItem],
-        BellcorpMap[Row], _Row          // BellcorpMap <-> BellPLMap join on "Row"
-    )
+VAR _LineItem = TBData[LineItem]
 VAR _IsOpex =
     TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
 RETURN
@@ -128,18 +93,28 @@ RETURN
 //
 //    Is the boundary right? "< 116" excludes 116 itself. If Segment 116
 //    should count as COGS, use "<= 116".
-
-
-// -- DIAGNOSTIC: three throwaway columns that show each gate separately.
-//    Delete them once Level 1 checks out.
 //
-//    Debug LineItem = RELATED ( BellcorpMap[LineItem] )
+//    Column naming: written as TBData[LineItem]. If the column is actually
+//    "Line Item" with a space, adjust -- DAX will flag that one as an error
+//    rather than failing quietly.
+
+
+// -- DIAGNOSTIC: two throwaway columns that show the conditional gates
+//    separately. Delete them once Level 1 checks out.
+//
 //    Debug Segment  = TBData[Segment] < 116
 //    Debug InOpex   = TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
 //
-//    Put these next to PL Level 1 in a table visual with [Amount]. Rows
-//    landing on "Unmapped" have a blank LineItem AND no OPEXMap match --
-//    that is the list to hand back to Finance.
+//    Put these next to TBData[LineItem] and PL Level 1 in a table visual with
+//    [Amount]. Rows landing on "Unmapped" have a blank LineItem AND no
+//    OPEXMap match -- that is the list to hand back to Finance.
+
+
+// -- NOTE ON BellcorpMap / BellPLMap
+//    LineItem is read straight off TBData, so the two-hop bridge
+//    TBData -> BellPLMap -> BellcorpMap is no longer used by this report.
+//    Neither are the relationships it needed. Leave the tables in the model
+//    if other reports depend on them; nothing here does.
 
 
 // ---------------------------------------------------------------------
