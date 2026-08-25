@@ -11,7 +11,7 @@ All DAX is in [`PL_Hierarchy.dax`](./PL_Hierarchy.dax).
 | Matrix column | Revenue | COGS | OPEX |
 |---|---|---|---|
 | **Level 1** (Revenue / COGS / OPEX) | `TBData[LineItem]` = `"Revenue"` | `TBData[LineItem]` = `"COGS"` **and** `TBData[Segment]` < 116 | `TBData[Account Desc]` found in `OPEXMap[CTDesc]` |
-| **Level 2** (blue) | `TBData[Revenue Row Label]` | `TBData[Cc]` | `"Bonus"` if `TBData[Matrix]` = 286, else `TBData[Primary Group]` |
+| **Level 2** (blue) | *driven by `TBData[Cc]` alone — same gates for all three sections (see below)* | | |
 | **Level 3** (red) | `TBData[PL Label]` | `COGSMap[CTDesc Parent]` | `CCMap[Cost Center]` |
 | **Level 4** (green) | *not specified — see open questions* | *(sketch stops at L3)* | *not specified* |
 
@@ -33,8 +33,24 @@ All three inputs — `LineItem`, `Segment`, `Account Desc` — are columns on
 `TBData`, and the OPEX test uses `ALL()`, so **Level 1 needs no relationships
 at all**.
 
-The `Primary Group` department list no longer classifies Level 1. It is still
-used to *label* OPEX rows at Level 2 — see open question 14.
+The `Primary Group` department list no longer classifies Level 1.
+
+### Level 2 gates
+
+Level 2 no longer branches on the section — `TBData[Cc]` alone decides the
+label, first match wins:
+
+| # | Test | Result |
+|---|---|---|
+| 1 | `Cc` = 991 … 995 | `Total Residential / SMB / Enterprise / Wholesale / NFC Revenue` |
+| 2 | `Matrix` = 286 | `Bonus` |
+| 3 | `Cc` found in `CCMap[CCCode]` | `CCMap[Primary Group]` |
+| 4 | `Cc` in the fixed code list | `nnn-Description` (e.g. `078-Pole and Conduit Rentals`) |
+| 5 | otherwise | blank |
+
+The fixed list covers `Cc` 1, 2, 11, 21, 22, 24, 25, 27, 31, 32, 78, 79, 97,
+106, 116. Codes 22 and 24 carry no description, so their label is just the
+padded number.
 
 ## Why calculated columns and not three separate visuals
 
@@ -159,18 +175,27 @@ already reports.
 13. **"Adjusted"** — the name usually implies add-backs (one-off items,
     stock comp, management fees). None are applied here. If Finance's
     Adjusted EBITDA carries add-backs, they need adding to the measure.
-14. **Level 1 and Level 2 now use different OPEX definitions** — Level 1
-    decides OPEX from `OPEXMap[CTDesc]`; Level 2 still labels those rows with
-    `TBData[Primary Group]`. A row can be OPEX under the new rule while
-    carrying a Primary Group outside the 12 departments, and that stray value
-    becomes a Level 2 row header. Diagnostic and a catch-all fix are in the
-    `.dax` file.
-15. **`Segment` data type and boundary** — `< 116` assumes a numeric column;
+14. **Bonus rule retained** — the `Matrix` = 286 → `"Bonus"` override was not
+    restated in the Level 2 respec but has not been retracted, so it is kept
+    at gate 2 (after the revenue roll-ups, before `CCMap`). Delete the line if
+    bonus should now come through `CCMap` like any other cost centre.
+15. **Gate 5 returns blank** — as specified. A blank Level 2 renders as an
+    empty row header, making those amounts easy to miss in reconciliation.
+    `"Unmapped Cc " & _Cc` would surface them instead, matching how Level 1
+    handles its misses.
+16. **Duplicate `CCCode` in `CCMap`** — `LOOKUPVALUE` *errors* on duplicate
+    keys rather than picking one. Dedupe `CCMap` on `CCCode` in Power Query
+    (Group By → Count > 1 first, to see what you'd drop).
+17. **`Cc` data type** — every literal is written as a number, matching the
+    right-aligned codes in your source. If `Cc` is text, nothing matches and
+    every row falls to gate 5; quote all the literals and check for leading
+    zeros (`"001"` vs `"1"`).
+18. **`Segment` data type and boundary** — `< 116` assumes a numeric column;
     as text it compares alphabetically and misfires silently. Also confirm
     whether 116 itself should be COGS (`<=` rather than `<`).
-16. **`Account Desc` ↔ `CTDesc` matching** — exact string equality. Trim both
+19. **`Account Desc` ↔ `CTDesc` matching** — exact string equality. Trim both
     in Power Query first; one trailing space drops a row out of OPEX.
-17. **Column spelling** — written as `TBData[LineItem]`. If it is actually
+20. **Column spelling** — written as `TBData[LineItem]`. If it is actually
     `Line Item` with a space, adjust. DAX errors on this rather than failing
     quietly, so you will know immediately.
 

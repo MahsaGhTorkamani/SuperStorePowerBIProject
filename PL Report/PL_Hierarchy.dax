@@ -8,10 +8,9 @@
 //              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
 //              else LineItem, or "Unmapped" when that is blank
-//   Level 2  = TBData[Revenue Row Label]            (Revenue)
-//              TBData[Cc]                           (COGS)
-//              "Bonus" if TBData[Matrix] = 286,     (OPEX)
-//              else TBData[Primary Group]
+//   Level 2  = driven by TBData[Cc] alone: 991-995 revenue roll-ups,
+//              then Matrix 286 -> "Bonus", then CCMap[Primary Group],
+//              then the fixed "nnn-Description" code list
 //   Level 3  = TBData[PL Label]                     (Revenue)
 //              COGSMap[CTDesc Parent]               (COGS)
 //              CCMap[Cost Center]                   (OPEX)
@@ -119,66 +118,106 @@ RETURN
 
 // ---------------------------------------------------------------------
 // 2. LEVEL 2  -- the blue column
-//    Revenue -> TBData[Revenue Row Label]
-//    COGS    -> TBData[Cc]
-//    OPEX    -> "Bonus" when TBData[Matrix] = 286,
-//               otherwise TBData[Primary Group]
 // ---------------------------------------------------------------------
-// The OPEX branch reads Primary Group straight off TBData -- no CCMap lookup
-// and no relationship dependency at this level. (CCMap is still needed for
-// Level 3.) The Matrix 286 override is tested first, so a bonus row shows
-// "Bonus" in place of its department name.
+// Driven entirely by TBData[Cc]. Four gates, first match wins:
 //
-// !! CHECK THIS AFTER THE LEVEL 1 REWRITE !!
-// Level 1 no longer decides OPEX from Primary Group -- it now decides it from
-// OPEXMap[CTDesc]. Level 2 still LABELS those rows with Primary Group. The two
-// columns are now independent, so a row can be OPEX by the OPEXMap rule while
-// carrying a Primary Group that is not one of the 12 departments -- and that
-// stray value becomes a Level 2 row header.
+//   1. Cc 991-995                -> the five revenue roll-up labels
+//   2. Matrix = 286              -> "Bonus"          (see BONUS note below)
+//   3. Cc found in CCMap[CCCode] -> CCMap[Primary Group]
+//   4. Cc in the fixed code list -> "nnn-Description"
+//   5. otherwise                 -> BLANK            (see FALLBACK note)
 //
-// Diagnostic: table visual of PL Level 1, TBData[Primary Group], [Amount],
-// filtered to PL Level 1 = "OPEX". Anything outside the 12 departments
-// (BI/Product, Commercial Sales, Construction, Consumer Sales, Corporate
-// Marketing, Direct Field Operations, Direct Legal & Regulatory, G&A, Bonus,
-// Headquarters Expenses, Logistics, Technology) is a row the two rules
-// disagree about. Decide then whether to fix the source or to fold the
-// strays into a catch-all:
-//     _Section = "OPEX",
-//         IF ( TBData[Matrix] = 286, "Bonus",
-//              IF ( TBData[Primary Group] IN { ...the 12... },
-//                   TBData[Primary Group], "Other OPEX" ) ),
+// This no longer branches on PL Level 1 -- the Cc value alone decides the
+// label, so Revenue / COGS / OPEX rows all flow through the same gates.
 
 PL Level 2 =
-VAR _Section = TBData[PL Level 1]
+VAR _Cc = TBData[Cc]
+VAR _InCCMap = _Cc IN ALL ( CCMap[CCCode] )
+VAR _CCGroup =
+    LOOKUPVALUE (
+        CCMap[Primary Group],
+        CCMap[CCCode], _Cc
+    )
+VAR _CodeLabel =
+    SWITCH (
+        _Cc,
+        1,   "001-Other Carrier Network - Special Circuits",
+        2,   "002-Other Carrier Network - Switched",
+        11,  "011-Long Distance",
+        21,  "021-Resale Fee",
+        22,  "022",
+        24,  "024",
+        25,  "025-Consumer Other COGS",
+        27,  "027-FiOS COGS",
+        31,  "031-Large Systems",
+        32,  "032-Small Systems",
+        78,  "078-Miscellaneous Network",
+        79,  "079-Pole and Conduit Rentals",
+        97,  "097-SS7 Circuit",
+        106, "106-Backbone Network",
+        116, "116-DIPs"
+    )
 RETURN
     SWITCH (
         TRUE (),
-        _Section = "Revenue", TBData[Revenue Row Label],
-        _Section = "COGS",    TBData[Cc],
-        _Section = "OPEX",    IF ( TBData[Matrix] = 286, "Bonus", TBData[Primary Group] ),
+        // 1. revenue roll-ups
+        _Cc = 991, "Total Residential Revenue",
+        _Cc = 992, "Total SMB Revenue",
+        _Cc = 993, "Total Enterprise Revenue",
+        _Cc = 994, "Total Wholesale Revenue",
+        _Cc = 995, "Total NFC Revenue",
+        // 2. bonus override
+        TBData[Matrix] = 286, "Bonus",
+        // 3. mapped cost centre
+        _InCCMap, _CCGroup,
+        // 4. fixed network / COGS code list
+        NOT ISBLANK ( _CodeLabel ), _CodeLabel,
+        // 5. nothing matched
         BLANK ()
     )
 
-// The two routes to Bonus now agree by construction: a row with
-// Primary Group = "Bonus" returns "Bonus" through the ELSE branch, and a row
-// with Matrix = 286 returns "Bonus" through the IF. No conflict is possible.
-// The override only changes rows whose Primary Group is a DEPARTMENT but
-// whose Matrix marks them as bonus -- which is the point of it.
 
-// TYPE NOTE: the test assumes TBData[Matrix] is a NUMBER. If the column is
-// Text (Column tools -> Data type), the comparison never matches and no error
-// is raised -- every bonus row silently keeps its department name. Quote the
-// literal in that case:
-//     IF ( TBData[Matrix] = "286", "Bonus", TBData[Primary Group] )
+// -- BONUS NOTE (please confirm)
+//    You did not restate the Matrix = 286 -> "Bonus" rule in the new spec, but
+//    you asked for it earlier and have not retracted it, so it is kept. It
+//    sits at gate 2: after the revenue roll-ups (a compensation code should
+//    never outrank a revenue total) and before CCMap, because CCMap is what
+//    supplies the department label that Bonus is meant to override.
+//    Delete that one line if bonus should now come through CCMap like any
+//    other cost centre.
 
-// CONSEQUENCE: Matrix 286 rows from EVERY department collapse into one
-// "Bonus" group, so department subtotals EXCLUDE bonus. That is the usual
-// intent -- bonus reported as its own P&L line -- but it does mean
-// "Direct Field Operations" no longer ties to its fully loaded cost.
-//
-// If bonus should instead sit UNDER each department, leave Level 2 as plain
-// TBData[Primary Group] and put the override in PL Level 3 instead:
-//     _Section = "OPEX", IF ( TBData[Matrix] = 286, "Bonus", _CostCenter ),
+
+// -- FALLBACK NOTE
+//    Gate 5 returns BLANK exactly as specified. A blank Level 2 renders as an
+//    empty row header in the matrix, which makes those amounts hard to find
+//    and easy to overlook in reconciliation. To surface them instead:
+//        BLANK ()   ->   "Unmapped Cc " & _Cc
+//    That matches how Level 1 handles its own misses and costs nothing.
+
+
+// -- DUPLICATE KEYS IN CCMap
+//    LOOKUPVALUE ERRORS OUT if CCMap holds more than one row for the same
+//    CCCode -- "A table of multiple values was supplied". This is the same
+//    dedupe problem as the Name / Set Number CSV: in Power Query, select
+//    CCCode -> Home -> Remove Rows -> Remove Duplicates, after a Trim. Verify
+//    first with Group By on CCCode filtered to Count > 1, so you can see
+//    which rows you would be dropping rather than letting Power Query pick.
+
+
+// -- TYPE NOTE
+//    Every Cc literal above is written as a NUMBER, matching the right-aligned
+//    numeric codes in your source. If Cc is stored as TEXT, none of the
+//    comparisons match and every row falls to gate 5 -- quote them all
+//    ( _Cc = "991", 1 becomes "1" ... ) and check whether the text values
+//    carry leading zeros ("001" rather than "1"), which changes the literals
+//    again. Column tools -> Data type settles it.
+
+
+// -- MAINTAINABILITY
+//    The 15-entry code list is fine hard-coded while it is stable. If it
+//    starts changing, move it to a two-column reference table (Cc, Label) and
+//    replace _CodeLabel with a LOOKUPVALUE against it -- one table to edit
+//    instead of DAX.
 
 
 // ---------------------------------------------------------------------
@@ -198,7 +237,7 @@ VAR _CogsParent =
 VAR _CostCenter =
     LOOKUPVALUE (
         CCMap[Cost Center],
-        CCMap[Cost Center],
+        CCMap[CCCode],                  // key confirmed as CCCode
         TBData[Cc]
     )
 RETURN
@@ -251,35 +290,48 @@ SWITCH (
     99
 )
 
-// Level 2 sort: Revenue groups first, then OPEX departments in reporting
-// order (direct operations -> commercial -> support -> overhead). Reorder the
-// numbers to taste; anything unlisted falls to 99 and sorts last.
+// Level 2 sort: revenue roll-ups, then the fixed code list in Cc order, then
+// CCMap primary groups, then Bonus last.
+//
+// IMPORTANT -- this depends ONLY on the Level 2 label, never on Cc or on
+// PL Level 1 Sort. Power BI's "Sort by column" requires exactly ONE sort value
+// per displayed value. Several Cc codes can map to the same CCMap primary
+// group, so keying the sort off Cc would give one label two sort values and
+// Power BI would reject it with "there can't be more than one value in
+// <sort column> for the same value in <column>". Level 1 is already the outer
+// row level, so it does the section grouping on its own.
+
 PL Level 2 Sort =
-VAR _L1 = TBData[PL Level 1 Sort]
-VAR _L2 =
-    SWITCH (
-        TBData[PL Level 2],
-        // Revenue
-        "Total Residential Revenue",  1,
-        "Total SMB Revenue",          2,
-        // OPEX departments
-        "Direct Field Operations",    1,
-        "Construction",               2,
-        "Logistics",                  3,
-        "Consumer Sales",             4,
-        "Commercial Sales",           5,
-        "Corporate Marketing",        6,
-        "BI/Product",                 7,
-        "Technology",                 8,
-        "Direct Legal & Regulatory",  9,
-        "Headquarters Expenses",     10,
-        "G&A",                       11,
-        // Matrix 286 rows, pulled out of their departments
-        "Bonus",                     12,
-        99
-    )
-RETURN
-    _L1 * 100 + _L2
+SWITCH (
+    TBData[PL Level 2],
+    // revenue roll-ups
+    "Total Residential Revenue",                       1,
+    "Total SMB Revenue",                               2,
+    "Total Enterprise Revenue",                        3,
+    "Total Wholesale Revenue",                         4,
+    "Total NFC Revenue",                               5,
+    // fixed code list, ordered by Cc (100 + code)
+    "001-Other Carrier Network - Special Circuits",  101,
+    "002-Other Carrier Network - Switched",          102,
+    "011-Long Distance",                             111,
+    "021-Resale Fee",                                121,
+    "022",                                           122,
+    "024",                                           124,
+    "025-Consumer Other COGS",                       125,
+    "027-FiOS COGS",                                 127,
+    "031-Large Systems",                             131,
+    "032-Small Systems",                             132,
+    "078-Miscellaneous Network",                     178,
+    "079-Pole and Conduit Rentals",                  179,
+    "097-SS7 Circuit",                               197,
+    "106-Backbone Network",                          206,
+    "116-DIPs",                                      216,
+    // Bonus always last
+    "Bonus",                                         999,
+    // everything else -- CCMap primary groups -- sits between the code list
+    // and Bonus, alphabetically among themselves
+    500
+)
 
 
 // =====================================================================
