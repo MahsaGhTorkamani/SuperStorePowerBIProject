@@ -9,8 +9,9 @@
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
 //              else LineItem, or "Unmapped" when that is blank
 //   Level 2  = driven by TBData[Cc] alone: 991-995 revenue roll-ups,
-//              then Matrix 286 -> "Bonus", then CCMap[Primary Group],
-//              then the fixed "nnn-Description" code list
+//              then Matrix 286 -> "Bonus", then three OPEXMap CTDesc Parents
+//              -> "G&A", then CCMap[Primary Group], then the fixed
+//              "nnn-Description" code list
 //   Level 3  = LineItem & " " & RevMap[PLSect_cleaned]  when InternalRevMap
 //                                                       is in RevMap[RevIndex]
 //              COGSMap[CTDesc Parent]  when Account Desc is in COGSMap[CTDesc]
@@ -124,9 +125,11 @@ RETURN
 //
 //   1. Cc 991-995                -> the five revenue roll-up labels
 //   2. Matrix = 286              -> "Bonus"          (see BONUS note below)
-//   3. Cc found in CCMap[CCCode] -> CCMap[Primary Group]
-//   4. Cc in the fixed code list -> "nnn-Description"
-//   5. otherwise                 -> BLANK            (see FALLBACK note)
+//   3. OPEXMap[CTDesc Parent] is Bad Debt & Collection / Telecommunications /
+//      Taxes & Regulatory Fees   -> "G&A"            (see G&A note below)
+//   4. Cc found in CCMap[CCCode] -> CCMap[Primary Group]
+//   5. Cc in the fixed code list -> "nnn-Description"
+//   6. otherwise                 -> BLANK            (see FALLBACK note)
 //
 // This no longer branches on PL Level 1 -- the Cc value alone decides the
 // label, so Revenue / COGS / OPEX rows all flow through the same gates.
@@ -134,6 +137,11 @@ RETURN
 PL Level 2 =
 VAR _Cc = TBData[Cc]
 VAR _InCCMap = _Cc IN ALL ( CCMap[CCCode] )
+VAR _OpexParent =
+    LOOKUPVALUE (
+        OPEXMap[CTDesc Parent],
+        OPEXMap[CTDesc], TBData[Account Desc]
+    )
 VAR _CCGroup =
     LOOKUPVALUE (
         CCMap[Primary Group],
@@ -169,11 +177,17 @@ RETURN
         _Cc = 995, "Total NFC Revenue",
         // 2. bonus override
         TBData[Matrix] = 286, "Bonus",
-        // 3. mapped cost centre
+        // 3. OPEX parents that roll up into G&A
+        _OpexParent IN {
+            "Bad Debt & Collection",
+            "Telecommunications",
+            "Taxes & Regulatory Fees"
+        }, "G&A",
+        // 4. mapped cost centre
         _InCCMap, _CCGroup,
-        // 4. fixed network / COGS code list
+        // 5. fixed network / COGS code list
         NOT ISBLANK ( _CodeLabel ), _CodeLabel,
-        // 5. nothing matched
+        // 6. nothing matched
         BLANK ()
     )
 
@@ -188,8 +202,38 @@ RETURN
 //    other cost centre.
 
 
+// -- G&A ROLL-UP NOTE
+//    _OpexParent uses the OPEXMap <-> TBData join (Account Desc <-> CTDesc),
+//    the same one Level 1 uses to decide OPEX and Level 4 uses for its second
+//    gate. It returns BLANK for any row not in OPEXMap, so this gate is
+//    inherently OPEX-scoped -- no extra "is this OPEX" test is needed.
+//
+//    ORDER MATTERS: it sits ahead of the CCMap gate on purpose. Behind it,
+//    CCMap[Primary Group] would already have claimed these rows and the
+//    reclass would never fire.
+//
+//    It sits AFTER Bonus, so a Matrix 286 row stays "Bonus" even if its
+//    CTDesc Parent is one of the three. Swap the two gates if G&A should win
+//    instead -- but check first whether any row satisfies both.
+//
+//    CONSEQUENCE: these three parents leave their own cost-centre groups, so
+//    those groups' subtotals shrink by exactly this amount. Intended when
+//    Finance reports them within G&A; worth confirming, because the affected
+//    department will no longer tie to its own ledger.
+//
+//    EXACT STRINGS: "Bad Debt & Collection", "Telecommunications" and
+//    "Taxes & Regulatory Fees" must match OPEXMap character for character,
+//    ampersands included. Trim OPEXMap[CTDesc Parent] in Power Query, then
+//    confirm with a table visual of DISTINCT CTDesc Parent values that these
+//    three appear exactly as written.
+//
+//    Rows reaching this gate already have "G&A" available as a CCMap Primary
+//    Group value, so both routes produce the same label and PL Level 2 Sort
+//    treats them identically.
+
+
 // -- FALLBACK NOTE
-//    Gate 5 returns BLANK exactly as specified. A blank Level 2 renders as an
+//    Gate 6 returns BLANK exactly as specified. A blank Level 2 renders as an
 //    empty row header in the matrix, which makes those amounts hard to find
 //    and easy to overlook in reconciliation. To surface them instead:
 //        BLANK ()   ->   "Unmapped Cc " & _Cc
@@ -435,6 +479,9 @@ SWITCH (
     "116-DIPs",                                      216,
     // Bonus always last
     "Bonus",                                         999,
+    // "G&A" is not listed: it arrives either as a CCMap Primary Group or via
+    // the CTDesc Parent roll-up, and both routes produce the same label, so it
+    // falls to the shared 500 alongside the other primary groups.
     // everything else -- CCMap primary groups -- sits between the code list
     // and Bonus, alphabetically among themselves
     500

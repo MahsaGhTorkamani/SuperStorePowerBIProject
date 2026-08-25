@@ -44,13 +44,21 @@ label, first match wins:
 |---|---|---|
 | 1 | `Cc` = 991 … 995 | `Total Residential / SMB / Enterprise / Wholesale / NFC Revenue` |
 | 2 | `Matrix` = 286 | `Bonus` |
-| 3 | `Cc` found in `CCMap[CCCode]` | `CCMap[Primary Group]` |
-| 4 | `Cc` in the fixed code list | `nnn-Description` (e.g. `078-Pole and Conduit Rentals`) |
-| 5 | otherwise | blank |
+| 3 | `OPEXMap[CTDesc Parent]` is `Bad Debt & Collection`, `Telecommunications` or `Taxes & Regulatory Fees` | `G&A` |
+| 4 | `Cc` found in `CCMap[CCCode]` | `CCMap[Primary Group]` |
+| 5 | `Cc` in the fixed code list | `nnn-Description` (e.g. `078-Pole and Conduit Rentals`) |
+| 6 | otherwise | blank |
 
 The fixed list covers `Cc` 1, 2, 11, 21, 22, 24, 25, 27, 31, 32, 78, 79, 97,
 106, 116. Codes 22 and 24 carry no description, so their label is just the
 padded number.
+
+Gate 3 reaches `CTDesc Parent` through the `OPEXMap` ↔ `TBData` join
+(`Account Desc` ↔ `CTDesc`) — the same join Level 1 uses to decide OPEX. It
+returns blank for any row not in `OPEXMap`, so the gate is inherently
+OPEX-scoped and needs no extra section test. It must sit **ahead of** gate 4,
+or `CCMap[Primary Group]` claims those rows first and the reclass never
+fires.
 
 ### Level 3 gates
 
@@ -216,6 +224,18 @@ already reports.
     restated in the Level 2 respec but has not been retracted, so it is kept
     at gate 2 (after the revenue roll-ups, before `CCMap`). Delete the line if
     bonus should now come through `CCMap` like any other cost centre.
+14b. **Bonus vs G&A precedence** — a `Matrix` = 286 row whose `CTDesc Parent`
+    is one of the three stays `"Bonus"`, because Bonus is tested first. Swap
+    gates 2 and 3 if G&A should win — but check first whether any row actually
+    satisfies both.
+14c. **G&A roll-up consequence** — those three parents leave their own
+    cost-centre groups, so the affected departments' subtotals shrink by
+    exactly that amount and no longer tie to their own ledger. Standard when
+    Finance reports them inside G&A; worth confirming.
+14d. **Exact strings** — `Bad Debt & Collection`, `Telecommunications` and
+    `Taxes & Regulatory Fees` must match `OPEXMap[CTDesc Parent]` character
+    for character, ampersands included. Trim the column, then eyeball a
+    distinct-values list to confirm the three appear as written.
 15. **Gate 5 returns blank** — as specified. A blank Level 2 renders as an
     empty row header, making those amounts easy to miss in reconciliation.
     `"Unmapped Cc " & _Cc` would surface them instead, matching how Level 1
