@@ -19,20 +19,27 @@ Level 1 runs **four gates in strict order** — first match wins:
 
 | # | Test | Result |
 |---|---|---|
-| 1 | `OPEXMap[CTDesc Parent]` is a G&A parent | `OPEX` |
-| 2 | `TBData[LineItem]` = `"Revenue"` | `Revenue` |
-| 3 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
-| 4 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
-| 5 | otherwise | `LineItem`, or `Unmapped` if that is blank |
+| 1 | `Account Desc` = `"Bonus"` | `Bonus` |
+| 2 | `OPEXMap[CTDesc Parent]` is a G&A parent | `G&A` |
+| 3 | `TBData[LineItem]` = `"Revenue"` | `Revenue` |
+| 4 | `LineItem` = `"COGS"` **and** `Segment` < 116 | `COGS` |
+| 5 | `Account Desc` appears in `OPEXMap[CTDesc]` | `OPEX` |
+| 6 | otherwise | `LineItem`, or `Unmapped` if that is blank |
 
-Gate 1 is **not** redundant with gate 4. Gate 4 only sees rows that got past
+**Bonus and G&A are carved out of OPEX as their own top-level categories**, so
+Level 1 yields **five** sections: `Revenue`, `COGS`, `OPEX`, `G&A`, `Bonus`.
+
+`Total OPEX` therefore stays `OPEX`-only. Bonus and G&A are still costs, so
+Adjusted EBITDA subtracts all three blocks:
+
+```dax
+Adjusted EBITDA :=
+[Total Revenue] - [Total COGS] - [Total OPEX] - [Total G&A] - [Total Bonus]
+```
+
+Gate 2 is **not** redundant with gate 5. Gate 5 only sees rows that got past
 Revenue and COGS — so a G&A-parent row carrying `LineItem` = `"Revenue"`, or
-`"COGS"` with `Segment` < 116, would stop earlier and never reach it. Level 1
-would then call it Revenue or COGS while Level 2 labels it `G&A`. Gate 1 makes
-all three levels agree.
-
-It returns **`OPEX`, not `G&A`** — G&A is a department inside OPEX and belongs
-at Level 2. See open question 23 if you want it as its own top-level line.
+`"COGS"` with `Segment` < 116, would stop earlier and never reach it.
 
 Gate 2 is a *release valve*, not a filter: a COGS row with `Segment` ≥ 116
 falls through to gate 3 where it can be reclassified as OPEX. If it isn't in
@@ -154,12 +161,17 @@ needing three visuals stitched together, which breaks subtotals and sorting.
    column* → `PL Level 1 Sort`. Repeat for `PL Level 2` → `PL Level 2 Sort`.
 
 4. **Add the measures** (`Amount`, `Total Revenue`, `Total COGS`,
-   `Gross Profit`, `Total OPEX`, `Adjusted EBITDA`, `Gross Margin %`,
-   `Adjusted EBITDA Margin %`).
+   `Gross Profit`, `Total OPEX`, `Total G&A`, `Total Bonus`,
+   `Adjusted EBITDA`, `Gross Margin %`, `Adjusted EBITDA Margin %`).
 
    ```dax
-   Adjusted EBITDA := [Total Revenue] - [Total COGS] - [Total OPEX]
+   Adjusted EBITDA :=
+   [Total Revenue] - [Total COGS] - [Total OPEX] - [Total G&A] - [Total Bonus]
    ```
+
+   Do **not** skip `Total G&A` / `Total Bonus`. They sit outside `OPEX` now,
+   so leaving them out of the subtraction overstates EBITDA by their full
+   value, with no error raised.
 
 5. **Build the matrix**:
    - *Rows*: `PL Level 1`, `PL Level 2`, `PL Level 3` (in that order)
@@ -184,7 +196,7 @@ needing three visuals stitched together, which breaks subtotals and sorting.
 ## Validation
 
 After step 2, drop `PL Level 1` into a table visual with `[Amount]`. You should
-see exactly `Revenue`, `COGS`, `OPEX` and nothing else. Any rows landing under
+see exactly `Revenue`, `COGS`, `OPEX`, `G&A`, `Bonus` and nothing else. Any rows landing under
 **"Unmapped"** are trial-balance accounts that are neither an OPEX department
 nor resolvable through `BellcorpMap` — chase those before trusting the totals.
 
@@ -264,12 +276,19 @@ already reports.
     and the levels disagree with no error raised. **Recommended**: move it to
     the disconnected `GAParents` table in the `.dax` file and use
     `IN ALL ( GAParents[Parent] )` in all three.
-23. **Should G&A be its own Level 1 line?** — as built it returns `OPEX`,
-    keeping G&A a department within OPEX. If Finance reports it as a separate
-    top-level section, change the gate to return `"G&A"` **and** widen the
-    measure to `CALCULATE ( [Amount], TBData[PL Level 1] IN { "OPEX", "G&A" } )`
-    — otherwise those amounts drop out of `Total OPEX` and `Adjusted EBITDA`
-    silently, with no error.
+23. ~~Should G&A be its own Level 1 line?~~ — **resolved**: yes. Both `G&A`
+    and `Bonus` are their own top-level categories, outside `OPEX`.
+24. **Level 1 and Level 2 define Bonus differently** — Level 1 gate 1 tests
+    `Account Desc` = `"Bonus"`; Level 2 gate 2 tests `Matrix` = 286. Those are
+    two different rules and won't agree unless every `Account Desc` = `"Bonus"`
+    row also carries `Matrix` 286 and vice versa. Where they disagree you get a
+    row under Level 1 `Bonus` whose Level 2 label is a department, or a row
+    under `OPEX` whose Level 2 says `Bonus`. Check once, then use one rule in
+    both columns.
+25. **`Account Desc` = `"Bonus"` is an exact match** — if descriptions read
+    `Bonus Accrual`, `Mgmt Bonus` etc., nothing fires. Use
+    `CONTAINSSTRING ( _Desc, "Bonus" )` instead (case-insensitive). Look at the
+    distinct `Account Desc` values before choosing.
 15. **Gate 5 returns blank** — as specified. A blank Level 2 renders as an
     empty row header, making those amounts easy to miss in reconciliation.
     `"Unmapped Cc " & _Cc` would surface them instead, matching how Level 1

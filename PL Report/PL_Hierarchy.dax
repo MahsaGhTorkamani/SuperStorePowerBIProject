@@ -8,6 +8,9 @@
 //              "Revenue"  if TBData[LineItem] = "Revenue"
 //              "COGS"     if LineItem = "COGS" and TBData[Segment] < 116
 //              "OPEX"     if TBData[Account Desc] is in OPEXMap[CTDesc]
+//              ...but "Bonus" and "G&A" are carved out ahead of all of these
+//              as their own top-level categories, so this column yields FIVE
+//              sections: Revenue, COGS, OPEX, G&A, Bonus
 //              else LineItem, or "Unmapped" when that is blank
 //   Level 2  = driven by TBData[CC] alone: 991-995 revenue roll-ups,
 //              then Matrix 286 -> "Bonus", then three OPEXMap CTDesc Parents
@@ -35,12 +38,18 @@
 // ---------------------------------------------------------------------
 // Four gates, tested strictly in this order. The first one that matches wins:
 //
-//   1. OPEXMap[CTDesc Parent] is a G&A parent      -> "OPEX"
-//   2. LineItem = "Revenue"                        -> "Revenue"
-//   3. LineItem = "COGS" AND Segment < 116         -> "COGS"
-//   4. Account Desc found in OPEXMap[CTDesc]       -> "OPEX"
-//   5. otherwise                                   -> LineItem
+//   1. Account Desc = "Bonus"                      -> "Bonus"
+//   2. OPEXMap[CTDesc Parent] is a G&A parent      -> "G&A"
+//   3. LineItem = "Revenue"                        -> "Revenue"
+//   4. LineItem = "COGS" AND Segment < 116         -> "COGS"
+//   5. Account Desc found in OPEXMap[CTDesc]       -> "OPEX"
+//   6. otherwise                                   -> LineItem
 //      ...and if LineItem is blank                 -> "Unmapped"
+//
+// Bonus and G&A are carved OUT of OPEX as their own top-level categories, so
+// this column now yields FIVE sections: Revenue, COGS, OPEX, G&A, Bonus.
+// [Total OPEX] stays OPEX-only; Adjusted EBITDA subtracts all three cost
+// blocks -- see the MEASURES block, and the note below the formula.
 //
 // Note what gate 2 does: a COGS row with Segment >= 116 does NOT stop there.
 // It falls through to gate 3, where it can be reclassified as OPEX. If it is
@@ -58,10 +67,11 @@
 
 PL Level 1 =
 VAR _LineItem = TBData[LineItem]
+VAR _Desc     = TBData[Account Desc]
 VAR _OpexParent =
     LOOKUPVALUE (
         OPEXMap[CTDesc Parent],
-        OPEXMap[CTDesc], TBData[Account Desc]
+        OPEXMap[CTDesc], _Desc
     )
 VAR _IsGA =
     _OpexParent IN {
@@ -70,11 +80,12 @@ VAR _IsGA =
         "Taxes & Regulatory Fees"
     }
 VAR _IsOpex =
-    TBData[Account Desc] IN ALL ( OPEXMap[CTDesc] )
+    _Desc IN ALL ( OPEXMap[CTDesc] )
 RETURN
     SWITCH (
         TRUE (),
-        _IsGA,                                        "OPEX",
+        _Desc = "Bonus",                              "Bonus",
+        _IsGA,                                        "G&A",
         _LineItem = "Revenue",                        "Revenue",
         _LineItem = "COGS" && TBData[Segment] < 116,  "COGS",
         _IsOpex,                                      "OPEX",
@@ -82,27 +93,43 @@ RETURN
     )
 
 
-// -- WHAT THE G&A GATE ACTUALLY CHANGES
-//    It is NOT redundant with gate 4. Gate 4 only sees rows that got past the
-//    Revenue and COGS gates. A G&A-parent row whose LineItem is "Revenue", or
-//    whose LineItem is "COGS" with Segment < 116, would stop at gate 2 or 3
-//    and never reach gate 4 -- so Level 1 would call it Revenue or COGS while
-//    Level 2 labels it "G&A" and Level 3 shows its CTDesc Parent. Putting the
-//    G&A test first makes all three levels agree for those rows.
+// -- !! ADJUSTED EBITDA HAD TO CHANGE WITH THIS !!
+//    Bonus and G&A are separate top-level categories now -- NOT inside OPEX --
+//    so [Total OPEX] stays exactly as it was: PL Level 1 = "OPEX" only.
+//    But they are still real costs, so Adjusted EBITDA has to subtract them:
+//        Adjusted EBITDA :=
+//        [Total Revenue] - [Total COGS] - [Total OPEX]
+//                        - [Total G&A]  - [Total Bonus]
+//    Paste this column WITHOUT updating that measure and EBITDA silently
+//    overstates by the whole of Bonus + G&A. See the MEASURES block below.
+
+
+// -- !! LEVEL 1 AND LEVEL 2 NOW DEFINE BONUS DIFFERENTLY !!
+//    Level 1 gate 1 tests  TBData[Account Desc] = "Bonus".
+//    Level 2 gate 2 tests  TBData[Matrix] = 286.
+//    Those are two different rules and they will not agree unless every
+//    Account Desc = "Bonus" row also carries Matrix 286 and vice versa. Where
+//    they disagree you get a row sitting under Level 1 "Bonus" whose Level 2
+//    label is a department, or a row under OPEX whose Level 2 says "Bonus".
 //
-//    If nothing changes when you add it, that simply means no G&A-parent row
-//    carries a Revenue or low-Segment COGS LineItem -- the gate is then cheap
-//    insurance against that appearing later.
+//    Check it once: table visual of TBData[Account Desc], TBData[Matrix],
+//    PL Level 1, PL Level 2, [Amount], filtered to Matrix = 286 OR
+//    Account Desc = "Bonus". Then pick ONE rule and use it in both columns.
 //
-//    IT RETURNS "OPEX", NOT "G&A". G&A is a department inside OPEX; it belongs
-//    at Level 2, which is where it is. Returning "G&A" here would make it a
-//    FOURTH Level 1 section, and [Total OPEX] filters on
-//    PL Level 1 = "OPEX", so those amounts would drop out of Total OPEX and
-//    out of Adjusted EBITDA -- silently, with no error. If you do want G&A as
-//    its own top-level line, change the gate to return "G&A" AND widen the
-//    measure:
-//        Total OPEX :=
-//        CALCULATE ( [Amount], TBData[PL Level 1] IN { "OPEX", "G&A" } )
+//    EXACT MATCH: gate 1 is written as _Desc = "Bonus" -- an exact match. If
+//    your descriptions read "Bonus Accrual", "Mgmt Bonus" and so on, nothing
+//    fires. Use a contains test instead:
+//        CONTAINSSTRING ( _Desc, "Bonus" ), "Bonus",
+//    CONTAINSSTRING is case-insensitive. Look at the distinct Account Desc
+//    values before choosing.
+
+
+// -- WHAT THE G&A GATE CHANGES
+//    It is not redundant with the OPEX gate. That gate only sees rows which
+//    got past Revenue and COGS, so a G&A-parent row carrying LineItem
+//    "Revenue" -- or "COGS" with Segment < 116 -- would stop earlier and never
+//    reach it. Testing G&A near the top makes Level 1 agree with Levels 2 and
+//    3 for those rows.
 
 
 // -- THE THREE G&A PARENTS NOW APPEAR IN THREE COLUMNS
@@ -536,6 +563,8 @@ SWITCH (
     "Revenue", 10,
     "COGS",    30,
     "OPEX",    50,
+    "G&A",     60,
+    "Bonus",   70,
     99
 )
 
@@ -592,7 +621,9 @@ SWITCH (
 // SIGN CONVENTION: this assumes costs are stored as POSITIVE numbers in
 // TBData[Amount]. If your trial balance carries costs as NEGATIVES (credit
 // convention), every subtraction below becomes an addition:
-//     Adjusted EBITDA := [Total Revenue] + [Total COGS] + [Total OPEX]
+//     Adjusted EBITDA :=
+//     [Total Revenue] + [Total COGS] + [Total OPEX] + [Total G&A]
+//                     + [Total Bonus]
 // Check one COGS row in Data view before trusting these numbers.
 // ---------------------------------------------------------------------
 
@@ -610,8 +641,16 @@ Gross Profit :=
 Total OPEX :=
 CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" )
 
+Total G&A :=
+CALCULATE ( [Amount], TBData[PL Level 1] = "G&A" )
+
+Total Bonus :=
+CALCULATE ( [Amount], TBData[PL Level 1] = "Bonus" )
+
+// Bonus and G&A sit OUTSIDE OPEX but are still costs, so all three are
+// subtracted here. Miss either one and EBITDA overstates by that amount.
 Adjusted EBITDA :=
-[Total Revenue] - [Total COGS] - [Total OPEX]
+[Total Revenue] - [Total COGS] - [Total OPEX] - [Total G&A] - [Total Bonus]
 
 Gross Margin % :=
 DIVIDE ( [Gross Profit], [Total Revenue] )
@@ -678,7 +717,9 @@ DATATABLE (
         { 30, "COGS",            "Section" },
         { 40, "Gross Profit",    "Calc"    },
         { 50, "OPEX",            "Section" },
-        { 60, "Adjusted EBITDA", "Calc"    }
+        { 60, "G&A",             "Section" },
+        { 70, "Bonus",           "Section" },
+        { 80, "Adjusted EBITDA", "Calc"    }
     }
 )
 
@@ -705,6 +746,8 @@ RETURN
             "Revenue",         CALCULATE ( [Amount], TBData[PL Level 1] = "Revenue" ),
             "COGS",            CALCULATE ( [Amount], TBData[PL Level 1] = "COGS" ),
             "OPEX",            CALCULATE ( [Amount], TBData[PL Level 1] = "OPEX" ),
+            "G&A",             [Total G&A],
+            "Bonus",           [Total Bonus],
             "Total Revenue",   [Total Revenue],
             "Gross Profit",    [Gross Profit],
             "Adjusted EBITDA", [Adjusted EBITDA],
